@@ -170,6 +170,38 @@ test('직접 하기: 노래 올리기 → AI 답장 붙여넣기 → 사진·영
     await page.click('details >> text=확인');
     await page.waitForSelector('text=그림 만들러 가기 →');
     await shot(page, '05_timing');
+
+    // ③-1 가사 시간 맞추기: 1. 맞추기 ([지금!] 4번, 한 번 취소하고 다시) → 2. 확인하기 (자막 미리보기, 한 줄 고치기) → 저장
+    await page.click('text=⌨ 탭으로 가사 맞추기');
+    await page.waitForSelector('.ls.ls-tap');
+    await page.click('.ls-big'); // ▶ 노래 틀기
+    await page.waitForFunction(() => { const a = document.querySelector('.ls audio'); return a && !a.paused && a.currentTime > 0.2; });
+    for (let k = 0; k < 4; k++) { await page.waitForTimeout(700); await page.click('.ls-big'); } // 지금!
+    await page.waitForSelector('.ls-cur:has-text("다 맞췄어요")');
+    await page.click('button:has-text("↩ 방금 것 취소")');
+    await page.waitForSelector('.ls-cur:has-text("너에게 닿을 때까지")');
+    await page.waitForTimeout(900);
+    await page.click('.ls-big');
+    await page.waitForSelector('.ls-cur:has-text("다 맞췄어요")');
+    await shot(page, '05b_tap');
+    await page.click('.ls-modes >> text=👀 2. 확인하기');
+    await page.waitForSelector('.ls.ls-check');
+    await page.waitForSelector('.ls-sub:not(.none)', { timeout: 15000 }); // 처음부터 다시 틀면 자막이 뜬다
+    await page.click('.ls-row >> nth=1');
+    await page.click('button:has-text("+ 0.1초 (늦게)")');
+    await shot(page, '05c_check');
+    const before = await page.evaluate(() => [...document.querySelectorAll('.ls-row .ls-chip')].map((c) => c.textContent));
+    assert.deepStrictEqual(before, ['✔ 맞춤', '✔ 맞춤', '✔ 맞춤', '✔ 맞춤']);
+    await page.click('.sheet-btns >> text=💾 저장');
+    await page.click('.sheet-btns >> text=자막만');
+    await page.waitForFunction(() => window.AnimeMaker.db.listProjects().then((l) => l[0].timing.lyricsSource === 'tap'));
+    const synced = await page.evaluate(() => window.AnimeMaker.db.listProjects().then((l) => l[0].timing.lyrics));
+    assert.strictEqual(synced.length, 4);
+    for (let i = 0; i < 4; i++) {
+      assert.ok(synced[i].end > synced[i].start, JSON.stringify(synced[i]));
+      if (i) assert.ok(synced[i].start > synced[i - 1].start, JSON.stringify(synced));
+    }
+    assert.ok(synced[0].start > 0.2 && synced[3].start < 10, JSON.stringify(synced));
     await page.click('text=그림 만들러 가기 →');
 
     // ④ 그림: 컷마다 사진 고르기

@@ -426,7 +426,7 @@ function timingStep() {
       (p.timing.lyrics || []).length ? h('button', {
         class: 'btn primary',
         onclick: async () => {
-          const out = await tapSync(p.timing.lyrics, await db.getFile(p.song.key), p.music.analysis.duration);
+          const out = await tapSync(p.timing.lyrics, await db.getFile(p.song.key), p.music.analysis.duration, { confirmed: ['tap', 'lrc', 'srt'].includes(p.timing.lyricsSource) });
           if (!out) return;
           PL.setTapLyrics(p, out);
           if (p.shots && await confirmBox('컷도 다시 나눌까요?', '새 가사 시간에 맞춰 컷 경계를 다시 나누면 장면 설계를 다시 부탁해야 해요.\n[자막만] 을 고르면 컷은 그대로 두고 자막 시간만 바꿔요.', '컷 다시 나누기', '자막만')) {
