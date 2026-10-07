@@ -76,11 +76,11 @@ test('recipe runner: upload, fill, submit, wait, save (src + download button)', 
 test('bundled recipes load and user overrides merge', () => {
   const bundled = path.join(__dirname, '..', 'src', 'main', 'ai', 'webbot', 'recipes.json');
   const r = loadRecipes(null, bundled);
-  for (const k of ['gemini.music', 'gemini.image', 'gemini.video', 'grok.image', 'grok.video', 'chatgpt.image']) assert.ok(r.tasks[k], k);
+  for (const k of ['gemini.image', 'gemini.video', 'grok.image', 'grok.video', 'chatgpt.image']) assert.ok(r.tasks[k], k);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'am-rec-'));
   const user = path.join(dir, 'recipes.json');
-  fs.writeFileSync(user, JSON.stringify({ version: 99, tasks: { 'gemini.music': { steps: [] } } }));
+  fs.writeFileSync(user, JSON.stringify({ version: 99, tasks: { 'gemini.image': { steps: [] } } }));
   const m = loadRecipes(user, bundled);
-  assert.deepStrictEqual(m.tasks['gemini.music'].steps, []);
+  assert.deepStrictEqual(m.tasks['gemini.image'].steps, []);
   assert.ok(m.tasks['grok.video']);
 });

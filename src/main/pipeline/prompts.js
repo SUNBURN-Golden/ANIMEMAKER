@@ -3,32 +3,48 @@
 
 const TRANSITION_TYPES = ['cut', 'fade', 'dissolve', 'fadeblack', 'flash', 'slideleft', 'slideup', 'wipeleft', 'zoomin', 'circleopen', 'pixelize', 'smoothleft'];
 
-function planPrompt(topic, wf) {
-  const parts = wf.musicParts || 2;
-  const sec = wf.partSeconds || 30;
-  return `# Task: plan a short AI music video
+function fmtTime(sec) {
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
 
-Topic (from the user, Korean): ${topic}
+/**
+ * 기획(스토리보드·시나리오) 지시문. 노래와 가사는 사용자가 올린 것(Suno 등)을 그대로 쓴다.
+ * @param {string} topic 사용자가 적은 영상 컨셉 (비어 있을 수 있음)
+ * @param {string} lyricsText 구간 태그가 포함된 가사 (없으면 연주곡)
+ * @param {{duration:number,bpm:number,downbeats:number[],bars:{level:string}[]}} analysis
+ */
+function planPrompt(topic, lyricsText, analysis, wf) {
+  const energy = summarizeEnergy(analysis);
+  return `# Task: storyboard and scenario for a music video of an existing song
 
-You are the director, storyboard artist, scenario writer and lyricist.
-Create a complete plan for a ${parts * sec}-second music video. The song will be made as ${parts} separate ${sec}-second music tracks (parts) by a music AI and joined in order, so each part must work on its own and flow into the next (same genre, same BPM, same key, same singer).
+The user already has the finished song (made with Suno) and its lyrics. You do NOT write lyrics or music.
+You are the director, storyboard artist and scenario writer.
+
+Song facts (measured from the audio file):
+- Length: ${fmtTime(analysis.duration)} (${analysis.duration.toFixed(1)} seconds)
+- Tempo: about ${Math.round(analysis.bpm)} BPM, ${analysis.downbeats.length} bars
+- Energy over time (low/mid/high, in order): ${energy}
+
+Lyrics (with Suno section tags):
+${lyricsText || '(instrumental - no lyrics)'}
+
+User's concept / topic (Korean, may be empty): ${topic || '(none - derive the story from the lyrics and mood)'}
 
 Workflow settings:
 - Aspect ratio: ${wf.aspect}
 - Visual style: ${wf.visualStyle}
-- Music genre/mood: ${wf.musicGenre}
-- Vocal: ${wf.vocal}
-- Lyrics language: ${wf.lyricsLanguage}
+- The video will be cut into ${wf.minClips}-${wf.maxClips} shots of 1-30 seconds each, synced to the beat.
 - Extra instructions from the user: ${wf.extraInstructions || '(none)'}
 
 Rules:
 - Korean for: title, logline, concept, description_ko, summary_ko.
-- English for: visual_style, appearance_en, world_en, visual_en, style_prompt (image/music AIs work best in English).
-- Lyrics in ${wf.lyricsLanguage}. Each part has ${Math.max(3, Math.round(sec / 7.5))}-${Math.max(4, Math.round(sec / 5))} short singable lines (one line = one subtitle, max ~18 Korean characters or ~8 English words).
+- English for: visual_style, appearance_en, world_en, visual_en (image/video AIs work best in English).
+- The story must follow the song from beginning to end: 5 to 9 acts, in order, each covering one or more lyric sections (use the section names from the lyrics, e.g. "Verse 1", "Chorus"). Choruses should feel like visual highlights.
 - appearance_en must be a precise, reusable description (age, hair, face, outfit, colors) so every image keeps the same character.
-- 1 to 3 characters. 4 to 6 story acts that follow the song from beginning to end.
-- music.bpm must be a single integer. style_prompt must include genre, mood, BPM, instruments and vocal type, and say it is ${sec} seconds long.
-- Original content only: no real celebrities, brands, or copyrighted characters/lyrics.
+- 1 to 3 characters (or none for a pure scenery video).
+- Original content only: no real celebrities, brands, or copyrighted characters.
 
 Return ONLY this JSON shape:
 {
@@ -38,21 +54,31 @@ Return ONLY this JSON shape:
   "visual_style": "...",
   "characters": [{"name": "...", "description_ko": "...", "appearance_en": "..."}],
   "world_en": "...",
-  "story": [{"act": 1, "summary_ko": "...", "visual_en": "..."}],
-  "music": {"genre": "...", "bpm": 110, "key": "...", "mood": "...", "instruments": "...", "vocal": "...", "language": "..."},
-  "song_parts": [{"part": 1, "role": "intro+verse", "style_prompt": "...", "lyrics": ["...", "..."]}]
+  "story": [{"act": 1, "sections": ["Intro", "Verse 1"], "summary_ko": "...", "visual_en": "..."}],
+  "music": {"genre": "...", "mood": "..."}
 }`;
 }
 
-function validPlan(o, wf) {
-  return !!(o && typeof o === 'object' && o.title && Array.isArray(o.song_parts) && o.song_parts.length >= 1
-    && o.song_parts.every((p) => Array.isArray(p.lyrics)) && Array.isArray(o.story)
-    && (!wf || o.song_parts.length >= Math.min(wf.musicParts || 1, 1)));
+function summarizeEnergy(analysis) {
+  const bars = analysis.bars || [];
+  if (!bars.length) return 'unknown';
+  const chunks = 12;
+  const out = [];
+  for (let i = 0; i < chunks; i++) {
+    const seg = bars.slice(Math.floor((i * bars.length) / chunks), Math.floor(((i + 1) * bars.length) / chunks));
+    if (!seg.length) continue;
+    const e = seg.reduce((a, b) => a + b.energy, 0) / seg.length;
+    out.push(e > 0.75 ? 'high' : e > 0.45 ? 'mid' : 'low');
+  }
+  return out.join(' → ');
+}
+
+function validPlan(o) {
+  return !!(o && typeof o === 'object' && o.title && Array.isArray(o.story) && o.story.length > 0);
 }
 
 function normalizePlan(o, wf) {
-  const parts = wf.musicParts || 2;
-  const plan = {
+  return {
     title: String(o.title || '제목 없음'),
     logline: String(o.logline || ''),
     concept: String(o.concept || ''),
@@ -63,41 +89,21 @@ function normalizePlan(o, wf) {
       appearance_en: String(c.appearance_en || c.appearance || ''),
     })),
     world_en: String(o.world_en || ''),
-    story: (o.story || []).map((s, i) => ({ act: i + 1, summary_ko: String(s.summary_ko || s.summary || ''), visual_en: String(s.visual_en || '') })),
-    music: { ...(o.music || {}) },
-    song_parts: [],
+    story: (o.story || []).map((s, i) => ({
+      act: i + 1,
+      sections: Array.isArray(s.sections) ? s.sections.map(String) : [],
+      summary_ko: String(s.summary_ko || s.summary || ''),
+      visual_en: String(s.visual_en || ''),
+    })),
+    music: { genre: String((o.music && o.music.genre) || ''), mood: String((o.music && o.music.mood) || '') },
   };
-  const bpm = parseInt(plan.music.bpm, 10);
-  plan.music.bpm = Number.isFinite(bpm) && bpm > 40 && bpm < 220 ? bpm : 110;
-  for (let i = 0; i < parts; i++) {
-    const src = o.song_parts[i] || o.song_parts[o.song_parts.length - 1];
-    plan.song_parts.push({
-      part: i + 1,
-      role: String(src.role || ''),
-      style_prompt: String(src.style_prompt || `${wf.musicGenre}, ${plan.music.bpm} BPM, ${wf.partSeconds || 30} seconds`),
-      lyrics: (src.lyrics || []).map((l) => String(l).trim()).filter(Boolean),
-    });
-  }
-  return plan;
-}
-
-/** 음악 AI(예: Gemini)에 붙여넣을 글 */
-function musicPasteText(plan, part, wf) {
-  const p = plan.song_parts[part - 1];
-  return [
-    `Make a ${wf.partSeconds || 30}-second song.`,
-    `Style: ${p.style_prompt}`,
-    `Genre: ${plan.music.genre || wf.musicGenre}. Tempo: ${plan.music.bpm} BPM. Key: ${plan.music.key || 'any'}. Vocal: ${plan.music.vocal || wf.vocal}.`,
-    part > 1 ? `This is part ${part} of the same song (continue the same melody, singer and sound as part ${part - 1}).` : '',
-    'Lyrics:',
-    ...p.lyrics,
-  ].filter(Boolean).join('\n');
 }
 
 function shotsPrompt(plan, segments, lyrics, analysis, wf) {
   const segText = segments.map((s) => {
     const lyr = s.lyrics.map((i) => lyrics[i] && lyrics[i].text).filter(Boolean);
-    return `- clip ${s.index}: ${s.start.toFixed(2)}s → ${s.end.toFixed(2)}s (${s.duration.toFixed(2)}s, ${s.beats} beats, part ${s.part}, energy ${s.energy})${lyr.length ? ` lyrics: "${lyr.join(' / ')}"` : ' (instrumental)'}`;
+    const sec = s.lyrics.map((i) => lyrics[i] && lyrics[i].section).filter(Boolean);
+    return `- clip ${s.index}: ${s.start.toFixed(2)}s → ${s.end.toFixed(2)}s (${s.duration.toFixed(2)}s, ${s.beats} beats, energy ${s.energy})${sec.length ? ` [${[...new Set(sec)].join(', ')}]` : ''}${lyr.length ? ` lyrics: "${lyr.join(' / ')}"` : ' (instrumental)'}`;
   }).join('\n');
   const trStyle = {
     cuts: 'Mostly hard cuts on the beat; use at most 2 special transitions.',
@@ -116,6 +122,7 @@ Clips:
 ${segText}
 
 For every clip describe ONE continuous shot that matches the lyrics and the energy of that moment, following the story acts in order.
+Clips longer than 15 seconds are generated in two pieces (the second continues from the last frame of the first), so for those describe a shot that keeps evolving: a slow continuous camera move or an action that develops, not a single frozen pose.
 Transitions: "transition_out" is the transition from this clip into the next one. Allowed types: ${TRANSITION_TYPES.join(', ')}. "beats" is the transition length in beats (0 for cut, otherwise 0.25, 0.5, 1 or 2). ${trStyle} The last clip's transition_out is ignored.
 Fields must be short English phrases (they are combined into an image prompt sentence):
 - characters: names (from the plan) that appear in the shot, [] if none
@@ -197,12 +204,17 @@ function composeVideoPrompt(shot, plan, wf, analysis, seg) {
   return `${body} No text, no subtitles, no logo.`;
 }
 
+/** 15초가 넘는 컷의 두 번째(이후) 조각: 앞 조각의 마지막 장면에서 이어서 */
+function continuationPrompt(basePrompt, piece, pieces) {
+  return `Continue the same shot seamlessly from this exact frame (part ${piece} of ${pieces}): same characters, same place, same lighting and art style, same direction of camera movement. ${basePrompt}`;
+}
+
 function characterSheetPrompt(plan, wf) {
   const chars = plan.characters.map((c) => `${c.name}: ${c.appearance_en}`).join('; ');
   return `${plan.visual_style || wf.visualStyle}. Character reference sheet on a plain light background: ${chars}. Full body, front view, each character clearly separated, consistent design, clean lines. No text, no letters, no watermark.`;
 }
 
 module.exports = {
-  TRANSITION_TYPES, planPrompt, validPlan, normalizePlan, musicPasteText,
-  shotsPrompt, validShots, normalizeShots, composeKeyframePrompt, composeVideoPrompt, characterSheetPrompt,
+  TRANSITION_TYPES, planPrompt, validPlan, normalizePlan, fmtTime,
+  shotsPrompt, validShots, normalizeShots, composeKeyframePrompt, composeVideoPrompt, continuationPrompt, characterSheetPrompt,
 };

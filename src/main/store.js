@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { DEFAULT_SETTINGS, BASE_WORKFLOW, BUILTIN_WORKFLOWS } = require('./defaults');
+const { parseLyrics } = require('./media/lyrics');
 
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return fallback; }
@@ -93,18 +94,26 @@ class Store {
   }
 
   // ---- 프로젝트 ----
-  createProject(topic, workflow) {
+  /**
+   * @param {string} topic 영상 컨셉 (비어 있어도 됨)
+   * @param {object} workflow
+   * @param {{songPath?:string, lyricsText?:string, lyricsFilename?:string}} [media] 올린 노래·가사
+   */
+  createProject(topic, workflow, media = {}) {
     const now = new Date();
     const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
-    const slug = topic.replace(/[\\/:*?"<>|\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 24).trim() || 'project';
+    const songName = media.songPath ? path.basename(media.songPath, path.extname(media.songPath)) : '';
+    const label = topic || songName || '뮤직비디오';
+    const slug = label.replace(/[\\/:*?"<>|\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 24).trim() || 'project';
     const id = `${stamp} ${slug}`;
     const dir = path.join(this.projectsDir(), id);
     fs.mkdirSync(dir, { recursive: true });
     const s = this.getSettings();
     const project = {
       id,
-      title: topic.slice(0, 40),
+      title: label.slice(0, 40),
       topic,
+      lyricsInput: parseLyrics(media.lyricsText || '', media.lyricsFilename),
       createdAt: Date.now(),
       updatedAt: Date.now(),
       workflow: { ...workflow },
@@ -113,6 +122,12 @@ class Store {
       status: 'idle',
       steps: {},
     };
+    if (media.songPath) {
+      fs.mkdirSync(path.join(dir, 'music'), { recursive: true });
+      const ext = path.extname(media.songPath).toLowerCase() || '.mp3';
+      fs.copyFileSync(media.songPath, path.join(dir, 'music', `song${ext}`));
+      project.song = { file: `music/song${ext}`, name: path.basename(media.songPath) };
+    }
     writeJson(path.join(dir, 'project.json'), project);
     return project;
   }

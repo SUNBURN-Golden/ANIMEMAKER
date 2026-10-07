@@ -38,7 +38,7 @@ test('text: every agent returns parsed JSON and never sees API keys', { skip: sk
   const { dir, settings } = setupFakes();
   for (const id of ['codex', 'grok', 'agy', 'claude']) {
     const o = await agentText(id, {
-      prompt: 'Return ONLY this JSON shape: {"title": "...", "song_parts": []}',
+      prompt: 'Return ONLY this JSON shape: {"title": "...", "logline": "..."}',
       dir: path.join(dir, `t-${id}`), settings, accept: (x) => !!x.title,
     });
     assert.match(o.title, new RegExp(id), `${id} title`);

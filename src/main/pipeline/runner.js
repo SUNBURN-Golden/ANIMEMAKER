@@ -1,11 +1,11 @@
 'use strict';
 // 전체 자동화 진행자 (오케스트레이션)
-//  1 plan      기획: 스토리보드 · 시나리오 · 가사 · 음악 스타일   (구독 LLM)
-//  2 music     음악: 노래 만들기/불러오기 → 이어붙이기 → BPM·박자 분석 (도우미/자동클릭 + 내 PC)
+//  1 music     노래·가사: 올린 노래(Suno 등) → BPM·박자·마디 분석          (내 PC)
+//  2 plan      기획: 가사와 노래 구조에 맞춘 스토리보드 · 시나리오          (구독 LLM)
 //  3 timing    타이밍: 가사 싱크 · 박자에 맞춘 컷 나누기 · 화면전환 · 샷 설계 (내 PC + 구독 LLM)
-//  4 keyframes 키프레임 이미지                                    (구독 AI)
-//  5 clips     영상 클립 1~15초                                   (구독 AI)
-//  6 edit      이어붙이기 + 하단 가사 자막 + 노래 깔기               (내 PC, 무료)
+//  4 keyframes 키프레임 이미지                                          (구독 AI)
+//  5 clips     영상 클립 1~30초 (15초 넘으면 마지막 장면에서 이어 만들기)     (구독 AI)
+//  6 edit      이어붙이기 + 하단 가사 자막 + 노래 깔기                     (내 PC, 무료)
 const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
@@ -17,14 +17,15 @@ const { waitForNewDownload, SITES, EXTS } = require('../ai/helper');
 const { NeedsUserError } = require('../ai/webbot/engine');
 const { analyzeSong } = require('../media/audio');
 const { estimateLyricTiming, segmentSong, resolveTransitions, clipNeeds, toSrt, toLrc } = require('../media/timeline');
-const { outputSize, normalizeClip, joinSongParts, buildAss, assembleFinal } = require('../media/assemble');
+const { outputSize, normalizeClip, buildAss, assembleFinal, lastFrame, joinPieces } = require('../media/assemble');
+const { parseLyrics, sectionSummary } = require('../media/lyrics');
 const { probe } = require('../media/ffmpeg');
 const P = require('./prompts');
 
-const STEPS = ['plan', 'music', 'timing', 'keyframes', 'clips', 'edit'];
+const STEPS = ['music', 'plan', 'timing', 'keyframes', 'clips', 'edit'];
 const STEP_LABELS = {
-  plan: '기획 (스토리보드·시나리오·가사)',
-  music: '음악 준비 + BPM 분석',
+  music: '노래·가사 분석 (BPM·박자)',
+  plan: '기획 (스토리보드·시나리오)',
   timing: '타이밍 설계 (가사 싱크·컷·전환)',
   keyframes: '키프레임 이미지',
   clips: '영상 클립',
@@ -54,6 +55,17 @@ class ProjectRunner extends EventEmitter {
     this.p = this.store.loadProject(o.projectId);
     if (!this.p) throw new Error('프로젝트를 찾을 수 없습니다.');
     this.dir = this.store.projectDir(this.p.id);
+    // 앱이 작업 도중에 꺼졌다면 '진행 중' 으로 남아 있다 → '중지됨' 으로 바로잡는다
+    if (this.p.status === 'running' || this.p.status === 'limited' || this.p.waiting) {
+      if (this.p.status === 'running' || this.p.status === 'limited') this.p.status = 'stopped';
+      this.p.waiting = null;
+      this.p.limitUntil = null;
+      for (const st of Object.values(this.p.steps || {})) {
+        if (st.status === 'running' || st.status === 'waiting') { st.status = 'stopped'; st.message = '중지됨 (앱이 꺼졌어요)'; }
+      }
+      for (const it of [...(this.p.keyframes || []), ...(this.p.clips || [])]) if (it.status === 'running') it.status = 'pending';
+      this.store.saveProject(this.p);
+    }
     this.running = false;
     this.abort = null;
     this.waiters = new Map();
@@ -247,20 +259,67 @@ class ProjectRunner extends EventEmitter {
     }
   }
 
-  // ---------- 1. 기획 ----------
+  // ---------- 1. 노래·가사 ----------
+  async step_music() {
+    fs.mkdirSync(path.join(this.dir, 'music'), { recursive: true });
+    if (!this.p.song || !this.exists(this.p.song.file)) {
+      let file;
+      if (this.p.providers.text === 'demo') {
+        this.setStep('music', { message: '체험용 예시 노래를 만드는 중…' });
+        fs.mkdirSync(path.join(this.dir, 'work'), { recursive: true });
+        file = await demo.demoMusic({ part: 1, seconds: this.p.demoSongSeconds || 90, bpm: 120, out: path.join(this.dir, 'work', 'demo_song.mp3'), signal: this.abort.signal });
+        if (!this.p.lyricsInput || !this.p.lyricsInput.lines.length) this.p.lyricsInput = parseLyrics(demo.DEMO_LYRICS);
+        this.log('🎵 노래 파일이 없어서 체험용 예시 노래(박자만 있는 음악)를 썼습니다.');
+      } else {
+        file = await this.waitForUser({ key: 'music:song', kind: 'music', title: '노래 파일 넣기', site: null,
+          message: 'Suno 등에서 만든 노래 파일(mp3, wav, m4a, mp4 등)을 넣어 주세요.' });
+        if (!file) throw new Error('노래 파일이 없습니다. 노래를 넣고 [이어서 하기] 를 눌러 주세요.');
+      }
+      this.setSong(file);
+    }
+    this.setStep('music', { message: '노래의 박자를 분석하는 중…' });
+    const songAbs = this.abs(this.p.song.file);
+    const prior = this.p.music && this.p.music.bpmOverride;
+    const analysis = await analyzeSong(songAbs, { priorBpm: prior, signal: this.abort.signal });
+    this.p.music = {
+      song: this.p.song.file,
+      bpmOverride: prior || null,
+      analysis,
+      partRanges: [{ index: 1, start: 0, end: analysis.duration }],
+    };
+    this.p.song.duration = analysis.duration;
+    const li = this.p.lyricsInput || { lines: [] };
+    this.log(`🎵 노래 ${P.fmtTime(analysis.duration)} · BPM ${analysis.bpm} · 마디 ${analysis.downbeats.length}개 · 가사 ${li.lines.length}줄${li.timed ? ' (시간 포함 가사)' : ''}`);
+    this.save();
+  }
+
+  /** 노래 파일을 작업 폴더로 복사해 등록 */
+  setSong(file) {
+    const ext = path.extname(file).toLowerCase() || '.mp3';
+    const dst = path.join(this.dir, 'music', `song${ext}`);
+    for (const f of fs.readdirSync(path.join(this.dir, 'music'))) {
+      if (/^song\./.test(f) && path.join(this.dir, 'music', f) !== dst) { try { fs.unlinkSync(path.join(this.dir, 'music', f)); } catch (_) { /* noop */ } }
+    }
+    if (path.resolve(file) !== path.resolve(dst)) fs.copyFileSync(file, dst);
+    this.p.song = { file: this.rel(dst), name: path.basename(file) };
+    this.save();
+  }
+
+  // ---------- 2. 기획 ----------
   async step_plan() {
     const prov = this.p.providers.text;
+    const analysis = this.p.music.analysis;
     let plan;
     if (prov === 'demo') {
       plan = P.normalizePlan(demo.demoPlan(this.p.topic, this.wf), this.wf);
     } else {
       const raw = await this.withRetry('기획', () => agentText(prov, {
-        prompt: P.planPrompt(this.p.topic, this.wf),
+        prompt: P.planPrompt(this.p.topic, sectionSummary(this.p.lyricsInput), analysis, this.wf),
         dir: path.join(this.dir, 'work', 'plan'),
         settings: this.settings,
         signal: this.abort.signal,
         onLog: (l) => this.log(l),
-        accept: (o) => P.validPlan(o, this.wf),
+        accept: P.validPlan,
       }));
       plan = P.normalizePlan(raw, this.wf);
     }
@@ -268,84 +327,29 @@ class ProjectRunner extends EventEmitter {
     this.p.title = plan.title;
     this.writeStoryboard();
     this.save();
-    if (this.wf.reviewAfterPlan) await this.review('plan', '기획안(스토리보드·가사)을 확인하고 필요하면 고친 뒤 [계속] 을 눌러 주세요.');
+    if (this.wf.reviewAfterPlan) await this.review('plan', '기획안(스토리보드·시나리오)을 확인하고 [계속] 을 눌러 주세요.');
   }
 
   writeStoryboard() {
     const plan = this.p.plan;
     if (!plan) return;
+    const a = this.p.music && this.p.music.analysis;
     const lines = [
       `# ${plan.title}`, '', `> ${plan.logline}`, '', plan.concept, '',
+      a ? `노래: ${(this.p.song && this.p.song.name) || ''} · ${P.fmtTime(a.duration)} · ${a.bpm} BPM · ${plan.music.genre || ''} ${plan.music.mood || ''}` : '', '',
       '## 등장인물', ...plan.characters.map((c) => `- **${c.name}**: ${c.description_ko} _(${c.appearance_en})_`), '',
-      '## 시나리오', ...plan.story.map((s) => `${s.act}. ${s.summary_ko}`), '',
-      `## 음악: ${plan.music.genre || ''} · ${plan.music.bpm} BPM · ${plan.music.mood || ''}`, '',
-      ...plan.song_parts.flatMap((p) => [`### 파트 ${p.part} (${p.role})`, `_${p.style_prompt}_`, '', ...p.lyrics, '']),
+      '## 시나리오', ...plan.story.map((s) => `${s.act}. ${s.sections.length ? `[${s.sections.join(', ')}] ` : ''}${s.summary_ko}`), '',
+      '## 가사', '', sectionSummary(this.p.lyricsInput), '',
     ];
     if (this.p.shots) {
       lines.push('## 샷 리스트', '');
       this.p.timing.segments.forEach((seg, i) => {
         const s = this.p.shots[i];
-        lines.push(`- 컷 ${seg.index} (${seg.start.toFixed(2)}~${seg.end.toFixed(2)}초, ${seg.beats}박): ${s.action} / ${s.camera} → ${(this.p.timing.transitions[i] || {}).type || '끝'}`);
+        lines.push(`- 컷 ${seg.index} (${seg.start.toFixed(2)}~${seg.end.toFixed(2)}초, ${seg.duration.toFixed(1)}초, ${seg.beats}박): ${s.action} / ${s.camera} → ${(this.p.timing.transitions[i] || {}).type || '끝'}`);
       });
     }
     fs.mkdirSync(path.join(this.dir, 'output'), { recursive: true });
     fs.writeFileSync(path.join(this.dir, 'output', 'storyboard.md'), lines.join('\n'));
-  }
-
-  // ---------- 2. 음악 ----------
-  async step_music() {
-    const plan = this.p.plan;
-    const n = this.p.providers.music === 'file' ? 1 : (this.wf.musicParts || 2);
-    this.p.music = this.p.music || { parts: [] };
-    const parts = this.p.music.parts;
-    fs.mkdirSync(path.join(this.dir, 'music'), { recursive: true });
-    for (let i = 1; i <= n; i++) {
-      this.checkAbort();
-      const cur = parts[i - 1];
-      if (cur && this.exists(cur.file)) continue;
-      this.setStep('music', { status: 'running', message: `음악 파트 ${i}/${n} 준비 중`, progress: { done: i - 1, total: n } });
-      const file = await this.genMusic(i, n);
-      if (!file) throw new Error(`음악 파트 ${i} 이(가) 없습니다. 파일을 넣어 주세요.`);
-      const dst = path.join(this.dir, 'music', `part${i}${path.extname(file).toLowerCase() || '.mp3'}`);
-      if (path.resolve(file) !== path.resolve(dst)) fs.copyFileSync(file, dst);
-      parts[i - 1] = { index: i, file: this.rel(dst), source: this.p.providers.music };
-      this.save();
-    }
-    this.setStep('music', { message: '노래를 이어붙이고 박자를 분석하는 중…' });
-    const files = parts.slice(0, n).map((p) => this.abs(p.file));
-    const joined = await joinSongParts(files, path.join(this.dir, 'music', 'song.m4a'), { crossfade: 1.0, signal: this.abort.signal });
-    this.p.music.song = 'music/song.m4a';
-    this.p.music.partRanges = joined.parts;
-    const prior = this.p.music.bpmOverride || plan.music.bpm;
-    const analysis = await analyzeSong(this.abs(this.p.music.song), { priorBpm: prior, signal: this.abort.signal });
-    this.p.music.analysis = analysis;
-    this.log(`🎵 노래 길이 ${analysis.duration.toFixed(1)}초, BPM ${analysis.bpm}, 박자 ${analysis.beats.length}개, 마디 ${analysis.downbeats.length}개`);
-    this.save();
-  }
-
-  async genMusic(part, total) {
-    const prov = this.p.providers.music;
-    const text = P.musicPasteText(this.p.plan, Math.min(part, this.p.plan.song_parts.length), this.wf);
-    const work = path.join(this.dir, 'work', 'music');
-    fs.mkdirSync(work, { recursive: true });
-    if (prov === 'demo') {
-      return demo.demoMusic({ part, seconds: this.wf.partSeconds || 30, bpm: this.p.plan.music.bpm, out: path.join(work, `demo${part}.mp3`), signal: this.abort.signal });
-    }
-    const title = prov === 'file' ? '내 노래 파일 넣기' : `음악 파트 ${part}/${total} 만들기`;
-    if (prov.startsWith('bot:')) {
-      const site = prov.slice(4);
-      const got = await this.tryBot(`${site}.music`, { prompt: text, seconds: this.wf.partSeconds || 30 }, work, title);
-      if (got) return got;
-      return this.waitForUser({ key: `music:${part}`, kind: 'music', title, site, copyText: text,
-        message: '자동 클릭이 막혀서 직접 마무리가 필요합니다. 열린 브라우저 창에서 노래를 만든 뒤 다운로드하면 자동으로 가져옵니다.' });
-    }
-    if (prov === 'file') {
-      return this.waitForUser({ key: `music:${part}`, kind: 'music', title, site: null, copyText: '',
-        message: '가지고 있는 노래 파일(mp3, wav, m4a, mp4 등)을 넣어 주세요. 가사가 기획안과 다르면 [타이밍] 단계에서 가사를 고칠 수 있습니다.' });
-    }
-    const site = this.p.helperSites.music || 'gemini';
-    return this.waitForUser({ key: `music:${part}`, kind: 'music', title, site, copyText: text,
-      message: `① [글 복사] → ② [${(SITES[site] || {}).name || '사이트'} 열기] → ③ 붙여넣고 노래 만들기 → ④ 다운로드. 다운로드하면 자동으로 가져옵니다.` });
   }
 
   // ---------- 3. 타이밍 ----------
@@ -354,20 +358,26 @@ class ProjectRunner extends EventEmitter {
     const analysis = this.p.music.analysis;
     const parts = this.p.music.partRanges;
     const prevTiming = this.p.timing || {};
-    // 가사 줄 (파트 정보 포함)
-    const lines = plan.song_parts.flatMap((p) => p.lyrics.map((text) => ({ text, part: Math.min(p.part, parts.length) })));
     let lyrics;
     if (prevTiming.lyricsSource === 'tap' && Array.isArray(prevTiming.lyrics) && prevTiming.lyrics.length) {
       lyrics = prevTiming.lyrics;
       this.log('⌨ 직접 맞춘(탭) 가사 타이밍을 사용합니다.');
     } else {
-      lyrics = estimateLyricTiming(lines, parts, analysis);
+      const c = this.computeLyrics();
+      this.p.timing = { ...prevTiming, lyrics: c.lyrics, lyricsSource: c.source };
+      lyrics = c.lyrics;
+      if (c.source !== 'auto' && lyrics.length) this.log(`⏱ 가사 파일(${c.source})의 시간을 그대로 사용합니다.`);
+      this.save();
+      if (c.source === 'auto' && lyrics.length && this.wf.lyricSyncPause !== false) {
+        await this.review('lyrics', '가사 자막 시간을 맞출 차례예요. [⌨ 탭으로 가사 맞추기] 를 누르고 노래를 들으며 줄이 시작될 때마다 스페이스바를 누르면 정확해져요. (컷도 가사에 맞춰 나눠요) 건너뛰려면 [자동 추정으로 계속] 을 누르세요.');
+        lyrics = this.p.timing.lyrics; // 그 사이 탭으로 맞췄거나 가사를 고쳤을 수 있다
+      }
     }
     const segments = segmentSong(analysis, lyrics, parts, {
       minClips: this.wf.minClips, maxClips: this.wf.maxClips, minLen: this.wf.minClipSec, maxLen: this.wf.maxClipSec, pace: this.wf.pace,
     });
     this.log(`✂ 컷 ${segments.length}개로 나눴습니다: ${segments.map((s) => s.duration.toFixed(1)).join('s, ')}s`);
-    this.p.timing = { ...prevTiming, lyrics, lyricsSource: prevTiming.lyricsSource === 'tap' ? 'tap' : 'auto', segments };
+    this.p.timing.segments = segments;
     this.save();
 
     this.setStep('timing', { message: '컷마다 장면과 화면전환을 설계하는 중…' });
@@ -395,6 +405,20 @@ class ProjectRunner extends EventEmitter {
     this.writeStoryboard();
     this.save();
     if (this.wf.reviewAfterTiming) await this.review('timing', '타이밍(가사 싱크·컷·전환)을 확인하고 [계속] 을 눌러 주세요. 가사 싱크는 [탭으로 맞추기] 로 다듬을 수 있습니다.');
+  }
+
+  /** 올린 가사 → 자막 줄 + 시간 (시간이 든 가사 파일이면 그대로, 아니면 자동 추정) */
+  computeLyrics() {
+    const li = this.p.lyricsInput || { lines: [] };
+    const analysis = this.p.music.analysis;
+    const withSection = (arr) => arr.map((t, i) => ({
+      ...t, part: 1,
+      section: (li.lines[i] && li.lines[i].section) || t.section || '',
+      sectionStart: li.lines[i] ? !!li.lines[i].sectionStart : !!t.sectionStart,
+    }));
+    if (li.timed && li.timed.length) return { lyrics: withSection(li.timed), source: li.source };
+    const est = estimateLyricTiming(li.lines.map((l) => ({ ...l, part: 1 })), this.p.music.partRanges, analysis, { trailingGaps: li.trailingGaps });
+    return { lyrics: withSection(est), source: 'auto' };
   }
 
   /** 샷 → 키프레임/클립 작업 목록. 프롬프트가 같으면 기존 결과물을 유지한다. */
@@ -495,29 +519,67 @@ class ProjectRunner extends EventEmitter {
     });
   }
 
+  /**
+   * 컷 하나의 영상. 영상 AI 는 한 번에 15초까지라서, 더 긴 컷은 조각으로 나눠
+   * '앞 조각의 마지막 장면' 에서 이어 만든 뒤 하나로 잇는다.
+   * 만든 조각은 저장해 두어서 중간에 실패해도 다시 만들지 않는다.
+   */
   async genVideo(c, startImage) {
+    const maxPiece = Math.max(3, Math.min(15, this.settings.videoMaxSeconds || 15));
+    // 조각끼리 1초 정도 겹쳐서 잇기 때문에 조각 하나는 (최대 길이 - 1)초 만큼만 센다
+    const pieces = c.seconds <= maxPiece ? 1 : Math.ceil(c.seconds / (maxPiece - 1));
+    const pieceLen = pieces === 1 ? c.seconds : Math.min(maxPiece, Math.ceil(c.seconds / pieces) + 1);
+    const work = path.join(this.dir, 'work', 'clips', `clip${pad2(c.clip)}`);
+    fs.mkdirSync(work, { recursive: true });
+    const key = `${c.prompt}|${c.seconds}|${pieces}`;
+    if (c.piecesKey !== key) { c.pieces = []; c.piecesKey = key; }
+    c.piecesTotal = pieces;
+    let img = startImage;
+    for (let k = 1; k <= pieces; k++) {
+      const have = c.pieces[k - 1];
+      if (have && this.exists(have)) {
+        if (k < pieces) img = await lastFrame(this.abs(have), path.join(work, `last_${k}.png`), { signal: this.abort.signal });
+        continue;
+      }
+      const prompt = k === 1 ? c.prompt : P.continuationPrompt(c.prompt, k, pieces);
+      const file = await this.genVideoPiece(c, img, pieceLen, k, pieces, prompt);
+      if (!file) return null;
+      const dst = path.join(work, `piece${k}${path.extname(file).toLowerCase() || '.mp4'}`);
+      if (path.resolve(file) !== path.resolve(dst)) fs.copyFileSync(file, dst);
+      c.pieces[k - 1] = this.rel(dst);
+      this.save();
+      if (pieces > 1) this.log(`  🎞 컷 ${c.clip}: 조각 ${k}/${pieces} 완료`);
+      if (k < pieces) img = await lastFrame(dst, path.join(work, `last_${k}.png`), { signal: this.abort.signal });
+    }
+    if (pieces === 1) return this.abs(c.pieces[0]);
+    return joinPieces(c.pieces.map((r) => this.abs(r)), path.join(work, `joined_${Date.now()}.mp4`), { signal: this.abort.signal });
+  }
+
+  async genVideoPiece(c, startImage, seconds, k, pieces, prompt) {
     const prov = this.p.providers.video;
-    const work = path.join(this.dir, 'work', 'clips', `clip${pad2(c.clip)}_${Date.now()}`);
+    const work = path.join(this.dir, 'work', 'clips', `clip${pad2(c.clip)}`, `p${k}_${Date.now()}`);
     fs.mkdirSync(work, { recursive: true });
     const { w, h } = outputSize(this.wf.aspect, this.wf.quality);
-    const title = `영상 클립 ${c.clip} (${c.seconds}초)`;
+    const piece = pieces > 1 ? ` · ${k}/${pieces} 조각` : '';
+    const title = `영상 클립 ${c.clip}${piece} (${seconds}초)`;
     if (prov === 'demo') {
-      return demo.demoVideo({ image: startImage, seconds: c.seconds, w, h, out: path.join(work, 'demo.mp4'), signal: this.abort.signal });
+      return demo.demoVideo({ image: startImage, seconds, w, h, out: path.join(work, 'demo.mp4'), signal: this.abort.signal });
     }
     if (AGENTS[prov]) {
-      return agentVideo(prov, { prompt: c.prompt, startImage, seconds: c.seconds, aspect: this.wf.aspect, dir: work, settings: this.settings, signal: this.abort.signal, onLog: (l) => this.log(l) });
+      return agentVideo(prov, { prompt, startImage, seconds, aspect: this.wf.aspect, dir: work, settings: this.settings, signal: this.abort.signal, onLog: (l) => this.log(l) });
     }
-    const copy = `${c.prompt}\n(${c.seconds} seconds, ${this.wf.aspect})`;
+    const copy = `${prompt}\n(${seconds} seconds, ${this.wf.aspect})`;
+    const cont = k > 1 ? ' 이 조각은 앞 조각의 마지막 장면(이미지)에서 이어지게 만드는 거예요.' : '';
     if (prov.startsWith('bot:')) {
       const site = prov.slice(4);
-      const got = await this.tryBot(`${site}.video`, { prompt: c.prompt, image: startImage, seconds: c.seconds, aspect: this.wf.aspect }, work, title);
+      const got = await this.tryBot(`${site}.video`, { prompt, image: startImage, seconds, aspect: this.wf.aspect }, work, title);
       if (got) return got;
-      return this.waitForUser({ key: `video:${c.clip}`, kind: 'video', title, site, copyText: copy, image: startImage,
-        message: '자동 클릭이 막혀서 직접 마무리가 필요합니다. 열린 브라우저 창에서 영상을 만든 뒤 다운로드하면 자동으로 가져옵니다.' });
+      return this.waitForUser({ key: `video:${c.clip}:${k}`, kind: 'video', title, site, copyText: copy, image: startImage,
+        message: `자동 클릭이 막혀서 직접 마무리가 필요합니다. 열린 브라우저 창에서 영상을 만든 뒤 다운로드하면 자동으로 가져옵니다.${cont}` });
     }
     const site = this.p.helperSites.video || 'grok';
-    return this.waitForUser({ key: `video:${c.clip}`, kind: 'video', title, site, copyText: copy, image: startImage,
-      message: `① [이미지 복사] 후 ${(SITES[site] || {}).name || '사이트'} 에 붙여넣기 → ② [프롬프트 복사] 후 붙여넣기 → ③ 영상 생성(${c.seconds}초) → ④ 다운로드. 자동으로 가져옵니다.` });
+    return this.waitForUser({ key: `video:${c.clip}:${k}`, kind: 'video', title, site, copyText: copy, image: startImage,
+      message: `① [이미지 복사] 후 ${(SITES[site] || {}).name || '사이트'} 에 붙여넣기 → ② [프롬프트 복사] 후 붙여넣기 → ③ 영상 생성(${seconds}초) → ④ 다운로드. 자동으로 가져옵니다.${cont}` });
   }
 
   /** 자동 클릭 시도. 막히면 null (→ 도우미 모드) */
@@ -702,6 +764,8 @@ class ProjectRunner extends EventEmitter {
         if (prompt) c.prompt = prompt;
         const kf = this.p.keyframes.find((k) => k.clip === clip && k.slot === 1);
         if (!kf || !this.exists(kf.file)) throw new Error('키프레임을 먼저 만들어 주세요.');
+        c.pieces = [];
+        c.piecesKey = null;
         c.status = 'running'; this.save();
         const file = await this.genVideo(c, this.abs(kf.file));
         if (file) {
@@ -742,14 +806,6 @@ class ProjectRunner extends EventEmitter {
       this.removeOld(c.file, dst);
       fs.copyFileSync(file, dst);
       Object.assign(c, { file: this.rel(dst), status: 'done', error: null, updatedAt: Date.now() });
-    } else if (kind === 'music') {
-      this.p.music = this.p.music || { parts: [] };
-      const dst = path.join(this.dir, 'music', `part${clip}${path.extname(file).toLowerCase()}`);
-      fs.mkdirSync(path.dirname(dst), { recursive: true });
-      fs.copyFileSync(file, dst);
-      this.p.music.parts[clip - 1] = { index: clip, file: this.rel(dst), source: 'file' };
-      // 음악이 바뀌면 그 뒤 단계는 다시
-      for (const s of ['music', 'timing']) if (this.p.steps[s]) this.p.steps[s].status = 'pending';
     }
     this.p.editStale = true;
     this.save();
@@ -759,28 +815,51 @@ class ProjectRunner extends EventEmitter {
     if (rel && this.abs(rel) !== dst) { try { fs.unlinkSync(this.abs(rel)); } catch (_) { /* noop */ } }
   }
 
-  /** 기획안 수정 (가사 등) */
+  /** 기획안 수정 */
   updatePlan(plan) {
     this.p.plan = P.normalizePlan(plan, this.wf);
     this.writeStoryboard();
     this.save();
   }
 
-  /** 탭으로 맞춘 가사 타이밍 저장 */
-  updateLyrics(lyrics) {
-    if (!this.p.timing) throw new Error('타이밍 단계가 아직 없습니다.');
-    this.p.timing.lyrics = lyrics.map((l) => ({ text: String(l.text), part: l.part || 1, start: Number(l.start), end: Number(l.end) }))
-      .filter((l) => l.text && l.end > l.start).sort((a, b) => a.start - b.start);
-    this.p.timing.lyricsSource = 'tap';
+  /** 노래 파일 바꾸기 → 분석부터 다시 (기획은 유지) */
+  replaceSong(file) {
+    if (this.running) throw new Error('진행 중에는 바꿀 수 없습니다.');
+    fs.mkdirSync(path.join(this.dir, 'music'), { recursive: true });
+    this.setSong(file);
+    this.p.music = null;
+    this.p.timing = null;
+    for (const s of ['music', 'timing', 'edit']) if (this.p.steps[s]) this.p.steps[s].status = 'pending';
     this.p.editStale = true;
     this.save();
   }
 
-  /** 노래를 새로 만들도록 음악 파트를 비운다 */
-  resetMusic() {
-    if (this.running) throw new Error('진행 중에는 바꿀 수 없습니다.');
-    this.p.music = { parts: [] };
-    for (const s of ['music', 'timing', 'edit']) if (this.p.steps[s]) this.p.steps[s].status = 'pending';
+  /** 가사 글 바꾸기 (붙여넣기 또는 .txt/.lrc/.srt 파일) → 타이밍부터 다시 */
+  updateLyricsText(raw, filename) {
+    if (this.running && !(this.p.waiting && this.p.waiting.key === 'review:lyrics')) throw new Error('진행 중에는 바꿀 수 없습니다.');
+    this.p.lyricsInput = parseLyrics(raw, filename);
+    if (this.p.music && this.p.music.analysis) {
+      // 바뀐 가사로 자막 줄을 바로 다시 계산 (가사 맞추기 대기 중이면 그 화면에 바로 반영)
+      const c = this.computeLyrics();
+      this.p.timing = { ...(this.p.timing || {}), lyrics: c.lyrics, lyricsSource: c.source };
+    }
+    if (!this.running) for (const s of ['timing', 'edit']) if (this.p.steps[s]) this.p.steps[s].status = 'pending';
+    this.p.editStale = true;
+    this.writeStoryboard();
+    this.save();
+  }
+
+  /** 탭으로 맞춘 가사 타이밍 저장 (구간 정보는 같은 순서의 기존 줄에서 가져온다) */
+  updateLyrics(lyrics) {
+    if (!this.p.timing) throw new Error('타이밍 단계가 아직 없습니다.');
+    const prev = this.p.timing.lyrics || [];
+    this.p.timing.lyrics = lyrics.map((l, i) => ({
+      text: String(l.text), part: l.part || 1, start: Number(l.start), end: Number(l.end),
+      section: (prev[i] && prev[i].text === l.text ? prev[i].section : l.section) || '',
+      sectionStart: !!(prev[i] && prev[i].text === l.text ? prev[i].sectionStart : l.sectionStart),
+    })).filter((l) => l.text && l.end > l.start).sort((a, b) => a.start - b.start);
+    this.p.timing.lyricsSource = 'tap';
+    this.p.editStale = true;
     this.save();
   }
 

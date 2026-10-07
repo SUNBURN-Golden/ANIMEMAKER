@@ -50,14 +50,14 @@ if (/\$imagegen|image_gen|image generation/.test(prompt) && !/Return ONLY/.test(
 // 글쓰기
 const demo = require(path.join(process.env.FAKE_REPO_ROOT, 'src', 'main', 'ai', 'demo.js'));
 let answer;
-if (/"song_parts"/.test(prompt)) {
-  const plan = demo.demoPlan('가짜 주제', { musicParts: 2, musicGenre: 'k-pop', vocal: 'female', lyricsLanguage: '한국어' });
-  plan.title = `${name} 가 쓴 기획`;
-  answer = plan;
-} else if (/"shots"/.test(prompt)) {
+if (/"shots"/.test(prompt)) {
   const n = Number((/exactly (\d+) shots/.exec(prompt) || [])[1] || 10);
   const segs = Array.from({ length: n }, (_, i) => ({ index: i + 1, energy: 'mid' }));
   answer = demo.demoShots(segs, demo.demoPlan('x', {}));
+} else if (/"logline"/.test(prompt)) {
+  const plan = demo.demoPlan('가짜 주제', {});
+  plan.title = `${name} 가 쓴 기획`;
+  answer = plan;
 } else if (/"topics"/.test(prompt)) {
   answer = { topics: ['가짜 주제 1', '가짜 주제 2'] };
 } else {

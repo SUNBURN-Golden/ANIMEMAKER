@@ -193,6 +193,30 @@ async function assembleFinal(p) {
   return out;
 }
 
+/** 영상의 마지막 장면을 그림으로 저장 (긴 컷을 이어 만들 때 다음 조각의 시작 장면) */
+async function lastFrame(video, out, { signal } = {}) {
+  await runFfmpeg(['-y', '-sseof', '-3', '-i', video, '-update', '1', '-q:v', '2', out], { signal });
+  if (!fs.existsSync(out)) throw new Error('마지막 장면을 뽑지 못했습니다.');
+  return out;
+}
+
+/**
+ * 조각 영상들을 하나로 잇는다. 두 번째 조각부터는 첫 프레임(앞 조각의 마지막 장면과 같음)을 뺀다.
+ */
+async function joinPieces(files, out, { signal } = {}) {
+  if (files.length === 1) { fs.copyFileSync(files[0], out); return out; }
+  const first = await probe(files[0]);
+  const w = (first.width || 720) - ((first.width || 720) % 2);
+  const h = (first.height || 1280) - ((first.height || 1280) % 2);
+  const args = ['-y'];
+  files.forEach((f) => args.push('-i', f));
+  const f = files.map((_, i) => `[${i}:v]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1,fps=${FPS},format=yuv420p${i > 0 ? ',trim=start_frame=1,setpts=PTS-STARTPTS' : ''}[p${i}]`);
+  f.push(`${files.map((_, i) => `[p${i}]`).join('')}concat=n=${files.length}:v=1:a=0[v]`);
+  args.push('-filter_complex', f.join(';'), '-map', '[v]', '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', out);
+  await runFfmpeg(args, { signal });
+  return out;
+}
+
 /** 키프레임/클립 미리보기용 썸네일 */
 async function thumbnail(video, out, { signal } = {}) {
   await runFfmpeg(['-y', '-ss', '0.3', '-i', video, '-frames:v', '1', '-vf', 'scale=360:-2', out], { signal });
@@ -201,4 +225,4 @@ async function thumbnail(video, out, { signal } = {}) {
 
 function round3(x) { return Math.round(x * 1000) / 1000; }
 
-module.exports = { outputSize, normalizeClip, joinSongParts, buildAss, assembleFinal, thumbnail, FPS };
+module.exports = { outputSize, normalizeClip, joinSongParts, buildAss, assembleFinal, thumbnail, lastFrame, joinPieces, FPS };

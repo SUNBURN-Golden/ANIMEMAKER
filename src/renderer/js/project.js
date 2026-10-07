@@ -7,8 +7,8 @@
   let cur = null; // { id, snap, els, tab, userTab, sigs }
 
   const TABS = [
-    { id: 'plan', label: '📝 기획·가사' },
-    { id: 'timing', label: '⏱️ 음악·타이밍' },
+    { id: 'timing', label: '🎵 노래·가사·타이밍' },
+    { id: 'plan', label: '📝 기획' },
     { id: 'keyframes', label: '🖼️ 키프레임' },
     { id: 'clips', label: '🎞️ 영상 클립' },
     { id: 'final', label: '✨ 완성 영상' },
@@ -17,7 +17,7 @@
 
   function tabForStep(step, status) {
     if (status === 'done') return 'final';
-    return { plan: 'plan', music: 'timing', timing: 'timing', keyframes: 'keyframes', clips: 'clips', edit: 'final' }[step] || 'plan';
+    return { music: 'timing', plan: 'plan', timing: 'timing', keyframes: 'keyframes', clips: 'clips', edit: 'final' }[step] || 'timing';
   }
 
   function abs(snap, rel) { return AM.joinPath(snap.dir, rel); }
@@ -104,6 +104,13 @@
     const el = clear(cur.els.alert);
     const w = snap.waiting;
     if (w && snap.running) {
+      if (w.kind === 'review' && w.key === 'review:lyrics') {
+        el.appendChild(h('div', { class: 'wait-card' }, h('h3', null, '⌨ 가사 자막 시간 맞추기'), h('div', null, w.message),
+          h('div', { class: 'actions' },
+            h('button', { class: 'btn primary', onclick: () => tapSyncDialog(snap, true) }, '⌨ 탭으로 가사 맞추기'),
+            h('button', { class: 'btn', onclick: () => window.api.continueReview(snap.id) }, '자동 추정으로 계속 ▶'))));
+        return;
+      }
       if (w.kind === 'review') {
         el.appendChild(h('div', { class: 'wait-card' }, h('h3', null, '👀 확인해 주세요'), h('div', null, w.message),
           h('div', { class: 'actions' }, h('button', { class: 'btn primary', onclick: () => window.api.continueReview(snap.id) }, '계속 ▶'))));
@@ -188,7 +195,7 @@
     const fns = { plan: planTab, timing: timingTab, keyframes: keyframesTab, clips: clipsTab, final: finalTab, log: logTab };
     const sigFns = {
       plan: () => JSON.stringify([snap.plan, snap.running]),
-      timing: () => JSON.stringify([snap.music && snap.music.analysis && snap.music.analysis.bpm, snap.music && snap.music.song, snap.timing, snap.running, snap.steps.music && snap.steps.music.status]),
+      timing: () => JSON.stringify([snap.music && snap.music.analysis && snap.music.analysis.bpm, snap.song, snap.lyricsInput && snap.lyricsInput.raw, snap.timing, snap.running, snap.waiting && snap.waiting.key, snap.steps.music && snap.steps.music.status]),
       keyframes: () => JSON.stringify([snap.keyframes, snap.refs, snap.running]),
       clips: () => JSON.stringify([snap.clips, snap.running, snap.timing && snap.timing.transitions]),
       final: () => JSON.stringify([snap.output, snap.editStale, snap.running, snap.steps.edit]),
@@ -207,81 +214,101 @@
   // ---------- 기획 탭 ----------
   function planTab(snap) {
     const plan = snap.plan;
-    if (!plan) return h('div', { class: 'section muted' }, snap.running ? '🧠 기획안을 쓰는 중이에요… (보통 1~3분)' : '아직 기획안이 없어요.');
-    const lyricBoxes = plan.song_parts.map((p) => {
-      const ta = h('textarea', { rows: Math.max(4, p.lyrics.length + 1), disabled: snap.running });
-      ta.value = p.lyrics.join('\n');
-      const st = h('input', { type: 'text', value: p.style_prompt, disabled: snap.running });
-      return { p, ta, st };
-    });
-    const save = async () => {
-      const next = JSON.parse(JSON.stringify(plan));
-      lyricBoxes.forEach(({ p, ta, st }, i) => {
-        next.song_parts[i].lyrics = ta.value.split('\n').map((s) => s.trim()).filter(Boolean);
-        next.song_parts[i].style_prompt = st.value;
-      });
-      await AM.safe(() => window.api.updatePlan(snap.id, next), '저장했어요');
-      if (snap.steps.timing && snap.steps.timing.status === 'done') {
-        toast('가사를 바꿨다면 [↻ 단계 다시 하기] → 음악 또는 타이밍부터 다시 해 주세요.');
-      }
-    };
+    if (!plan) return h('div', { class: 'section muted' }, snap.running ? '🧠 가사와 노래 구조를 보고 스토리보드를 쓰는 중이에요… (보통 1~3분)' : '아직 기획안이 없어요. 노래 분석이 끝나면 만들어요.');
     return h('div', null,
       h('div', { class: 'section' },
         h('h3', null, plan.title),
         h('p', { class: 'desc' }, plan.logline),
         h('p', null, plan.concept),
-        h('div', { class: 'grid2' },
-          h('div', null, h('b', null, '🎭 등장인물'), h('ul', null, plan.characters.map((c) => h('li', null, h('b', null, c.name), ` - ${c.description_ko}`, h('div', { class: 'small muted' }, c.appearance_en))))),
-          h('div', null, h('b', null, '📖 시나리오'), h('ol', null, plan.story.map((s) => h('li', null, s.summary_ko)))))),
-      h('div', { class: 'section' },
-        h('h3', null, `🎵 노래: ${plan.music.genre || ''} · ${plan.music.bpm} BPM · ${plan.music.mood || ''}`),
-        h('p', { class: 'desc' }, '파트마다 30초 곡 하나씩 만들어 이어붙여요. 가사와 스타일을 고칠 수 있어요.'),
-        h('div', { class: 'grid2' }, lyricBoxes.map(({ p, ta, st }) => h('div', { class: 'col' },
-          h('b', null, `파트 ${p.part} ${p.role ? `(${p.role})` : ''}`),
-          h('label', { class: 'field' }, h('span', { class: 'hint' }, '음악 스타일'), st),
-          h('label', { class: 'field' }, h('span', { class: 'hint' }, '가사 (한 줄 = 자막 한 줄)'), ta)))),
-        h('div', { class: 'row', style: { marginTop: '10px' } }, h('button', { class: 'btn primary', disabled: snap.running, onclick: save }, '💾 수정 저장'),
-          snap.running ? h('span', { class: 'small muted' }, '진행 중에는 고칠 수 없어요. 고치려면 중지하세요.') : null)));
+        plan.music && (plan.music.genre || plan.music.mood) ? h('div', { class: 'small muted' }, `🎵 ${plan.music.genre || ''} ${plan.music.mood ? `· ${plan.music.mood}` : ''}`) : null,
+        h('div', { class: 'grid2', style: { marginTop: '10px' } },
+          h('div', null, h('b', null, '🎭 등장인물'), plan.characters.length
+            ? h('ul', null, plan.characters.map((c) => h('li', null, h('b', null, c.name), ` - ${c.description_ko}`, h('div', { class: 'small muted' }, c.appearance_en))))
+            : h('p', { class: 'muted small' }, '(인물 없이 풍경 위주)')),
+          h('div', null, h('b', null, '📖 시나리오 (노래 순서대로)'), h('ol', null, plan.story.map((st) => h('li', null,
+            st.sections && st.sections.length ? h('span', { class: 'chip', style: { marginRight: '6px' } }, st.sections.join(', ')) : null,
+            st.summary_ko)))))),
+      h('div', { class: 'small muted' }, '기획을 바꾸고 싶으면 [↻ 단계 다시 하기] → "기획부터" 를 고르세요. 워크플로우의 "추가 지시" 에 원하는 방향을 적으면 반영돼요.'));
   }
 
-  // ---------- 음악·타이밍 탭 ----------
+  // ---------- 노래·가사·타이밍 탭 ----------
   function timingTab(snap) {
     const m = snap.music;
-    if (!m || !m.analysis) {
-      const parts = (m && m.parts) || [];
-      return h('div', { class: 'section' },
-        h('h3', null, '🎵 노래 준비 중'),
-        h('p', { class: 'desc' }, '노래가 준비되면 박자(BPM)를 분석해서 컷과 화면전환을 박자에 맞춰 설계해요.'),
-        parts.length ? h('div', { class: 'col' }, parts.filter(Boolean).map((p) => h('div', { class: 'row' }, h('b', null, `파트 ${p.index}`), h('audio', { controls: true, src: url(snap, p.file), preload: 'metadata' })))) : null);
-    }
-    const a = m.analysis;
+    const a = m && m.analysis;
     const t = snap.timing;
-    const audio = h('audio', { controls: true, src: url(snap, m.song, snap.updatedAt && m.analysis.duration), preload: 'auto', style: { width: '100%' } });
-    const bpmIn = h('input', { type: 'number', value: Math.round(a.bpm), min: 40, max: 220, style: { width: '90px' }, disabled: snap.running });
-    const kids = [
-      h('div', { class: 'section' },
-        h('div', { class: 'row' },
-          h('div', { class: 'grow' }, h('h3', null, `🎵 노래 ${AM.fmtSec(a.duration)} · BPM ${a.bpm} · 마디 ${a.downbeats.length}개`),
-            h('p', { class: 'desc' }, '박자는 내 PC 에서 자동 분석했어요. 박자가 두 배/절반으로 잘못 잡혔다면 BPM 을 고쳐 다시 분석하세요.')),
-          h('div', { class: 'row', style: { gap: '6px' } }, 'BPM', bpmIn, h('button', {
-            class: 'btn small', disabled: snap.running,
-            onclick: async () => {
-              const r = await AM.safe(() => window.api.setBpm(snap.id, Number(bpmIn.value)), '다시 분석했어요');
-              if (r && snap.timing && await AM.confirmBox('컷을 다시 나눌까요?', '박자가 바뀌었으니 타이밍(컷 나누기)부터 다시 하는 게 좋아요. 이미 만든 키프레임/클립은 장면이 같으면 그대로 써요.', '타이밍부터 다시')) {
-                window.api.runProject(snap.id, 'timing');
-              }
-            },
-          }, 'BPM 바꿔서 다시 분석'))),
-        audio),
-    ];
-    if (t && t.segments) {
+    const inLyricReview = !!(snap.waiting && snap.waiting.key === 'review:lyrics');
+    const kids = [];
+
+    // 노래
+    const songAbs = snap.song ? abs(snap, snap.song.file) : null;
+    const audio = h('audio', { controls: true, src: songAbs ? AM.fileUrl(songAbs) : '', preload: 'auto', style: { width: '100%' } });
+    const bpmIn = h('input', { type: 'number', value: a ? Math.round(a.bpm) : 120, min: 40, max: 220, style: { width: '90px' }, disabled: snap.running || !a });
+    kids.push(h('div', { class: 'section' },
+      h('div', { class: 'row' },
+        h('div', { class: 'grow' },
+          h('h3', null, snap.song ? `🎵 ${snap.song.name}` : '🎵 노래 파일이 아직 없어요'),
+          h('p', { class: 'desc' }, a
+            ? `길이 ${AM.fmtSec(a.duration)} · BPM ${a.bpm} · 마디 ${a.downbeats.length}개 (내 PC 에서 자동 분석). 박자가 두 배/절반으로 잘못 잡혔다면 BPM 을 고쳐 다시 분석하세요.`
+            : (snap.song ? '분석을 기다리는 중이에요.' : 'Suno 등에서 만든 노래 파일을 넣어 주세요.'))),
+        a ? h('div', { class: 'row', style: { gap: '6px' } }, 'BPM', bpmIn, h('button', {
+          class: 'btn small', disabled: snap.running,
+          onclick: async () => {
+            const r = await AM.safe(() => window.api.setBpm(snap.id, Number(bpmIn.value)), '다시 분석했어요');
+            if (r && snap.timing && await AM.confirmBox('컷을 다시 나눌까요?', '박자가 바뀌었으니 타이밍(컷 나누기)부터 다시 하는 게 좋아요. 이미 만든 키프레임/클립은 장면이 같으면 그대로 써요.', '타이밍부터 다시')) {
+              window.api.runProject(snap.id, 'timing');
+            }
+          },
+        }, 'BPM 바꿔서 다시 분석')) : null,
+        h('button', {
+          class: 'btn small', disabled: snap.running,
+          onclick: async () => {
+            const f = await window.api.pickFile({ filters: [{ name: '노래', extensions: ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'mp4', 'webm', 'mov', 'm4v'] }] });
+            if (!f) return;
+            if (snap.song && !await AM.confirmBox('노래를 바꿀까요?', '노래가 바뀌면 박자 분석과 컷 나누기를 다시 해요. 기획(스토리보드)은 그대로 둬요.', '바꾸기')) return;
+            if (await AM.safe(() => window.api.replaceSong(snap.id, f), '노래를 바꿨어요. [▶ 이어서 하기] 를 누르세요.')) AM.go('project', snap.id);
+          },
+        }, snap.song ? '🎵 노래 바꾸기' : '🎵 노래 넣기')),
+      songAbs ? audio : null));
+
+    // 가사
+    const li = snap.lyricsInput || { raw: '', lines: [] };
+    const editable = !snap.running || inLyricReview;
+    const ta = h('textarea', { rows: 8, disabled: !editable, placeholder: '가사가 없으면 연주곡으로 만들어요.' });
+    ta.value = li.raw || '';
+    let fname = '';
+    kids.push(h('div', { class: 'section' },
+      h('div', { class: 'row' },
+        h('div', { class: 'grow' }, h('h3', null, `📝 가사 ${li.lines.length}줄 ${li.timed ? '(시간 포함 ✔)' : ''}`),
+          h('p', { class: 'desc' }, 'Suno 가사를 그대로 붙여넣어도 돼요. [Verse] [Chorus] 같은 구간 표시는 자막에 나오지 않고, 장면을 나눌 때 써요.')),
+        h('button', {
+          class: 'btn small', disabled: !editable,
+          onclick: async () => {
+            const f = await window.api.pickFile({ filters: [{ name: '가사', extensions: ['txt', 'lrc', 'srt'] }] });
+            if (!f) return;
+            const text = await AM.safe(() => window.api.readTextFile(f));
+            if (text != null) { ta.value = text; fname = f.split(/[\\/]/).pop(); }
+          },
+        }, '📄 가사 파일 불러오기'),
+        h('button', {
+          class: 'btn small primary', disabled: !editable,
+          onclick: async () => {
+            const ok = await AM.safe(() => window.api.updateLyricsText(snap.id, ta.value, fname), '가사를 저장했어요');
+            if (ok && !inLyricReview && snap.steps.timing && snap.steps.timing.status === 'done') toast('가사가 바뀌었어요. [▶ 이어서 하기] 를 누르면 타이밍부터 다시 해요.');
+            if (ok && inLyricReview) toast('바뀐 가사로 자막 줄을 다시 만들었어요. [⌨ 탭으로 가사 맞추기] 또는 [자동 추정으로 계속] 을 누르세요.');
+          },
+        }, '💾 가사 저장')),
+      ta));
+
+    if (t && (t.segments || (t.lyrics && t.lyrics.length))) {
+      const canTap = (!snap.running || inLyricReview) && t.lyrics && t.lyrics.length;
+      const srcLabel = { tap: '(직접 맞춤 ✔)', lrc: '(가사 파일 시간 ✔)', srt: '(자막 파일 시간 ✔)', auto: '(자동 추정 - 탭으로 맞추면 정확해져요)' }[t.lyricsSource] || '';
       kids.push(h('div', { class: 'section' },
         h('div', { class: 'row' },
-          h('div', { class: 'grow' }, h('h3', null, `✂ 컷 ${t.segments.length}개 · 가사 ${t.lyrics.length}줄 ${t.lyricsSource === 'tap' ? '(직접 맞춤 ✔)' : '(자동 추정)'}`),
+          h('div', { class: 'grow' }, h('h3', null, `${t.segments ? `✂ 컷 ${t.segments.length}개 · ` : ''}가사 자막 ${t.lyrics.length}줄 ${srcLabel}`),
             h('p', { class: 'desc' }, '보라색 세로줄 = 마디 시작, 회색 = 박자. 컷 경계는 모두 박자 위에 있어요. 컷을 누르면 그 위치부터 재생돼요.')),
-          h('button', { class: 'btn primary', disabled: snap.running, onclick: () => tapSyncDialog(snap) }, '⌨ 탭으로 가사 맞추기')),
-        timeline(snap, audio),
-        segTable(snap)));
+          h('button', { class: 'btn primary', disabled: !canTap, onclick: () => tapSyncDialog(snap, inLyricReview) }, '⌨ 탭으로 가사 맞추기')),
+        a ? timeline(snap, audio) : null,
+        t.segments ? segTable(snap) : null));
     }
     return h('div', null, kids);
   }
@@ -293,12 +320,12 @@
     const pct = (x) => `${(x / D) * 100}%`;
     const colors = ['#7c3aed', '#ff5e62', '#0ea5e9', '#16a34a', '#f59e0b', '#db2777', '#4f46e5', '#0d9488'];
     const beats = h('div', { class: 'tl-row small' }, a.beats.map((b) => h('div', { class: `tl-beat ${a.downbeats.some((d) => Math.abs(d - b) < 0.02) ? 'down' : ''}`, style: { left: pct(b) } })));
-    const segs = h('div', { class: 'tl-row' }, t.segments.map((s, i) => h('div', {
+    const segs = h('div', { class: 'tl-row' }, (t.segments || []).map((s, i) => h('div', {
       class: 'tl-seg', title: `컷 ${s.index}: ${s.start.toFixed(2)}~${s.end.toFixed(2)}초 (${s.beats}박)`,
       style: { left: pct(s.start), width: pct(s.duration), background: colors[i % colors.length] },
       onclick: () => { audio.currentTime = s.start; audio.play(); },
     }, String(s.index))));
-    const trs = h('div', { class: 'tl-row small' }, (t.transitions || []).map((tr, i) => (tr.type === 'cut' ? null : h('div', { class: 'tl-tr', style: { left: pct(t.segments[i].end) }, title: tr.type }, trIcon(tr.type)))));
+    const trs = h('div', { class: 'tl-row small' }, (t.segments ? t.transitions || [] : []).map((tr, i) => (tr.type === 'cut' ? null : h('div', { class: 'tl-tr', style: { left: pct(t.segments[i].end) }, title: tr.type }, trIcon(tr.type)))));
     const lyr = h('div', { class: 'tl-row' }, t.lyrics.map((l) => h('div', { class: 'tl-lyr', style: { left: pct(l.start), width: pct(Math.max(0.3, l.end - l.start)) }, title: `${l.start.toFixed(2)}s ${l.text}` }, l.text)));
     const head = h('div', { class: 'tl-head', style: { left: '0%' } });
     const wrap = h('div', { class: 'timeline' }, h('div', { class: 'tl-label' }, '박자'), beats, h('div', { class: 'tl-label' }, '컷 / 화면전환'), trs, segs, h('div', { class: 'tl-label' }, '가사 자막'), lyr, head);
@@ -324,7 +351,7 @@
       })));
   }
 
-  function tapSyncDialog(snap) {
+  function tapSyncDialog(snap, inReview) {
     const t = snap.timing;
     const lines = (t.lyrics && t.lyrics.length ? t.lyrics : []).map((l) => ({ ...l }));
     if (!lines.length) { toast('가사가 없어요.', 'err'); return; }
@@ -332,6 +359,7 @@
     const marks = lines.map((l) => l.start);
     let idx = 0;
     const audio = h('audio', { controls: true, src: url(snap, snap.music.song), style: { width: '100%' } });
+    const progress = h('span', { class: 'small muted' });
     const rate = h('select', { style: { width: '120px' }, onchange: () => { audio.playbackRate = Number(rate.value); } },
       h('option', { value: '1' }, '보통 속도'), h('option', { value: '0.75' }, '0.75배 느리게'), h('option', { value: '0.5' }, '0.5배 느리게'));
     const list = h('div', { class: 'tap-lines' });
@@ -341,6 +369,7 @@
         h('span', { class: 'tm' }, i < idx ? marks[i].toFixed(2) : (i === idx ? '▶' : marks[i].toFixed(2))), l.text)));
       const c = list.children[idx];
       if (c) c.scrollIntoView({ block: 'nearest' });
+      progress.textContent = `${Math.min(idx, lines.length)} / ${lines.length} 줄`;
     };
     const onKey = (e) => {
       if (e.code === 'Space') {
@@ -355,7 +384,7 @@
     render();
     AM.modal('⌨ 탭으로 가사 맞추기', h('div', null,
       h('p', null, '노래를 재생하고, 각 가사 줄이 ', h('b', null, '시작되는 순간'), '에 ', h('span', { class: 'kbd' }, 'Space'), ' 를 누르세요. 틀리면 ', h('span', { class: 'kbd' }, 'Backspace'), ' 로 한 줄 되돌려요.'),
-      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => { idx = 0; audio.currentTime = 0; audio.play(); render(); } }, '⏮ 처음부터 맞추기'), rate),
+      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => { idx = 0; audio.currentTime = 0; audio.play(); render(); } }, '⏮ 처음부터 맞추기'), rate, progress),
       h('div', { style: { margin: '10px 0' } }, audio),
       list), [
       { label: '취소' },
@@ -363,9 +392,11 @@
         label: '💾 저장', kind: 'primary',
         onClick: async () => {
           for (let i = 1; i < marks.length; i++) if (marks[i] <= marks[i - 1]) { toast(`${i + 1}번째 줄 시간이 앞 줄보다 빨라요. 다시 맞춰 주세요.`, 'err'); return true; }
-          const out = lines.map((l, i) => ({ text: l.text, part: l.part, start: marks[i], end: Math.min(i + 1 < marks.length ? marks[i + 1] - 0.05 : D - 0.1, marks[i] + 6) }));
+          if (idx < lines.length && !await AM.confirmBox('아직 다 안 맞췄어요', `${lines.length}줄 중 ${idx}줄만 맞췄어요. 나머지 줄은 원래 시간으로 저장할까요?`, '그대로 저장')) return true;
+          const out = lines.map((l, i) => ({ text: l.text, part: l.part, section: l.section, sectionStart: l.sectionStart, start: marks[i], end: Math.min(i + 1 < marks.length ? marks[i + 1] - 0.05 : D - 0.1, marks[i] + 7) }));
           const ok = await AM.safe(() => window.api.updateLyrics(snap.id, out), '가사 타이밍을 저장했어요');
           if (ok === undefined) return true;
+          if (inReview) { window.api.continueReview(snap.id); return false; }
           const redo = await AM.confirmBox('어떻게 반영할까요?', '• 자막만 다시 입히기: 지금 컷은 그대로 두고 최종 영상의 자막만 새 타이밍으로 (빠름)\n• 컷도 다시 나누기: 새 가사 타이밍에 맞춰 컷 경계를 다시 설계 (장면이 바뀐 컷은 다시 만들어야 할 수 있어요)', '자막만 다시 입히기');
           if (redo) window.api.runProject(snap.id, 'edit');
           else if (await AM.confirmBox('컷도 다시 나눌까요?', '타이밍 단계부터 다시 진행합니다.', '컷 다시 나누기')) window.api.runProject(snap.id, 'timing');
@@ -520,32 +551,24 @@
       h('p', null, '선택한 단계부터 다시 진행해요. 이미 만든 키프레임·클립은 장면(프롬프트)이 같으면 그대로 써서 사용량을 아껴요.'),
       sel,
       h('ul', { class: 'small muted' },
-        h('li', null, '기획부터: 이야기·가사를 새로 써요 (그 뒤 전부 다시)'),
-        h('li', null, '음악부터: 노래를 다시 준비하고 분석해요'),
+        h('li', null, '노래·가사부터: 박자를 다시 분석해요 (노래를 바꾸려면 [노래·가사·타이밍] 탭의 [노래 바꾸기])'),
+        h('li', null, '기획부터: 스토리보드·시나리오를 새로 써요'),
         h('li', null, '타이밍부터: 컷 나누기·화면전환을 다시 설계해요'),
         h('li', null, '최종 편집부터: 자막·전환만 다시 입혀요 (무료, 빠름)'))), [
       { label: '취소' },
       {
         label: '다시 하기', kind: 'primary',
-        onClick: async () => {
-          if (sel.value === 'music') {
-            // 음악을 새로 받으려면 기존 파트 파일을 비운다
-            if (await AM.confirmBox('노래를 새로 만들까요?', '기존 노래 파일 대신 새로 만들려면 [새로 만들기], 지금 노래로 다시 분석만 하려면 [취소] 후 BPM 다시 분석을 쓰세요.', '새로 만들기')) {
-              await window.api.resetMusic(snap.id);
-            }
-          }
-          window.api.runProject(snap.id, sel.value);
-        },
+        onClick: () => { window.api.runProject(snap.id, sel.value); },
       },
     ]);
   }
 
   function providersDialog(snap) {
     const sels = {};
-    const rows = ['text', 'image', 'video', 'music'].map((k) => {
+    const rows = ['text', 'image', 'video'].map((k) => {
       sels[k] = h('select', null, AM.PROVIDERS[k].map((p) => h('option', { value: p.id }, p.label)));
       sels[k].value = snap.providers[k];
-      return h('label', { class: 'field' }, ({ text: '기획·타이밍 (글쓰기)', image: '키프레임 (이미지)', video: '영상 클립', music: '음악' })[k], sels[k]);
+      return h('label', { class: 'field' }, ({ text: '기획·타이밍 (글쓰기)', image: '키프레임 (이미지)', video: '영상 클립' })[k], sels[k]);
     });
     AM.modal('이 작업의 담당 AI', h('div', { class: 'col' }, h('p', { class: 'muted small' }, '이 작업에만 적용돼요. 기본값은 [AI 연결 설정] 에서 바꿔요.'), rows), [
       { label: '취소' },

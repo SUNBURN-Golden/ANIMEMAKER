@@ -33,44 +33,50 @@ function nearest(arr, t) {
 }
 
 /**
- * 가사 줄 타이밍 자동 추정.
- * 각 파트(30초 곡 하나) 안에서 전주 1마디를 비우고, 글자 수 비율로 줄을 배치한 뒤 박자에 붙인다.
- * 정확한 싱크는 앱의 '탭으로 가사 맞추기' 로 다듬는다.
- * @param {{text:string, part:number}[]} lines
+ * 가사 줄 타이밍 자동 추정 (대략).
+ * 전주·간주 구간([Intro], [Instrumental] 등)은 몇 마디를 비워 두고,
+ * 나머지 시간을 글자 수 비율로 나눈 뒤 박자에 붙인다.
+ * 정확한 싱크는 앱의 '탭으로 가사 맞추기' 로 맞춘다.
+ * @param {{text:string, part?:number, sectionStart?:boolean, gapBefore?:number}[]} lines
  * @param {{index:number,start:number,end:number}[]} parts
  * @param {{beats:number[],downbeats:number[],beatPeriod:number,duration:number}} analysis
+ * @param {{trailingGaps?:number}} [opts]
  */
-function estimateLyricTiming(lines, parts, analysis) {
-  const out = [];
+function estimateLyricTiming(lines, parts, analysis, opts = {}) {
+  if (!lines.length) return [];
   const bar = analysis.beatPeriod * 4;
-  for (const part of parts) {
-    const pl = lines.map((l, i) => ({ ...l, i })).filter((l) => (l.part || 1) === part.index);
-    if (!pl.length) continue;
-    const firstDown = analysis.downbeats.find((d) => d >= part.start + 0.05) ?? part.start;
-    const introBars = part.index === parts[0].index ? 1 : 0;
-    let vs = introBars ? Math.min(part.start + bar * 1.0, part.end - 2) : part.start;
-    vs = Math.max(vs, introBars ? firstDown : part.start);
-    const ve = Math.max(vs + 1, part.end - Math.min(bar * 0.5, 2));
-    const weights = pl.map((l) => syllables(l.text) + 3);
-    const total = weights.reduce((a, b) => a + b, 0);
-    let acc = vs;
-    pl.forEach((l, k) => {
-      const len = ((ve - vs) * weights[k]) / total;
-      let start = analysis.beats.length ? nearest(analysis.beats, acc) : acc;
-      if (start < part.start) start = acc;
-      out[l.i] = { text: l.text, part: part.index, start: round2(start), end: 0 };
-      acc += len;
-    });
+  const start0 = parts.length ? parts[0].start : 0;
+  const end0 = parts.length ? parts[parts.length - 1].end : analysis.duration;
+  const songLen = end0 - start0;
+  const gapBar = 8;
+  const gapsBefore = lines.map((l, i) => {
+    const g = l.gapBefore || 0;
+    if (i === 0) return g ? g * gapBar : 2; // 태그가 없어도 전주 2마디는 비운다
+    return g * gapBar;
+  });
+  const tail = (opts.trailingGaps ? opts.trailingGaps * gapBar : 2);
+  let gapSec = (gapsBefore.reduce((a, b) => a + b, 0) + tail) * bar;
+  const scale = gapSec > songLen * 0.4 ? (songLen * 0.4) / gapSec : 1;
+  gapSec *= scale;
+  const weights = lines.map((l) => syllables(l.text) + 3 + (l.sectionStart ? 2 : 0));
+  const total = weights.reduce((a, b) => a + b, 0);
+  const sing = Math.max(lines.length * 0.8, songLen - gapSec);
+  const out = [];
+  let acc = start0;
+  lines.forEach((l, i) => {
+    acc += gapsBefore[i] * bar * scale;
+    const grid = l.sectionStart && analysis.downbeats.length ? analysis.downbeats : analysis.beats;
+    let st = grid.length ? nearest(grid, acc) : acc;
+    if (out.length && st <= out[out.length - 1].start + 0.3) st = acc;
+    out.push({ text: l.text, part: l.part || 1, start: round2(Math.max(start0, st)), end: 0 });
+    acc += (sing * weights[i]) / total;
+  });
+  for (let k = 0; k < out.length; k++) {
+    const next = out[k + 1];
+    const limit = next ? next.start - 0.05 : end0 - 0.1;
+    out[k].end = round2(Math.max(out[k].start + 0.8, Math.min(limit, out[k].start + 7)));
   }
-  // end = 다음 줄 시작 직전 (최대 6초)
-  const ordered = out.filter(Boolean).sort((a, b) => a.start - b.start);
-  for (let k = 0; k < ordered.length; k++) {
-    const next = ordered[k + 1];
-    const partEnd = (parts.find((p) => p.index === ordered[k].part) || { end: analysis.duration }).end;
-    const limit = next ? next.start - 0.05 : partEnd - 0.1;
-    ordered[k].end = round2(Math.max(ordered[k].start + 0.8, Math.min(limit, ordered[k].start + 6)));
-  }
-  return out.filter(Boolean);
+  return out;
 }
 
 /**
@@ -84,20 +90,25 @@ function segmentSong(analysis, lyrics, parts, opts = {}) {
   const minClips = opts.minClips ?? 10;
   const maxClips = opts.maxClips ?? 15;
   const minLen = Math.max(1, opts.minLen ?? 1);
-  const maxLen = Math.min(15, opts.maxLen ?? 14);
+  const maxLen = Math.min(30, opts.maxLen ?? 30);
   const pace = opts.pace || 'normal';
-  const idealLen = opts.idealLen ?? ({ fast: 3.5, normal: 5, slow: 7 }[pace] || 5);
+  // 컷 수 목표: 빠르게=최대, 보통=중간, 느리게=최소 → 컷 하나의 이상적인 길이
+  const targetCount = pace === 'fast' ? maxClips : pace === 'slow' ? minClips : Math.round((minClips + maxClips) / 2);
+  const idealLen = opts.idealLen ?? Math.min(maxLen, Math.max(minLen, duration / Math.max(1, targetCount)));
 
   const beatSet = analysis.beats.filter((t) => t > 0.2 && t < duration - 0.2);
   const cands = [0, ...beatSet, duration];
   const isDown = (t) => analysis.downbeats.some((d) => Math.abs(d - t) < 0.03);
   const lyricStarts = lyrics.map((l) => l.start);
+  const sectionStarts = lyrics.filter((l) => l.sectionStart).map((l) => l.start);
   const partStarts = parts.slice(1).map((p) => p.start);
   const cutCost = cands.map((t, i) => {
     if (i === 0 || i === cands.length - 1) return 0;
     let c = 1.2;
     if (isDown(t)) c -= 0.9;
     if (lyricStarts.some((s) => Math.abs(s - t) < 0.12)) c -= 0.8;
+    // 구간(벌스→후렴 등)이 바뀌는 곳은 장면 전환하기 가장 좋은 자리
+    if (sectionStarts.some((s) => Math.abs(s - t) < analysis.beatPeriod * 0.6)) c -= 1.2;
     if (partStarts.some((s) => Math.abs(s - t) < analysis.beatPeriod * 0.6)) c -= 1.5;
     // 가사 줄 한가운데를 자르는 건 감점
     if (lyrics.some((l) => t > l.start + 0.3 && t < l.end - 0.3)) c += 0.4;
@@ -137,7 +148,7 @@ function segmentSong(analysis, lyrics, parts, opts = {}) {
   let bestK = -1;
   let best = Infinity;
   for (const k of kList) {
-    const c = dp[k][n - 1] + 0.15 * Math.abs(k - target);
+    const c = dp[k][n - 1] + 0.8 * Math.abs(k - target);
     if (c < best) { best = c; bestK = k; }
   }
   if (bestK < 0) {
@@ -208,7 +219,8 @@ function clipNeeds(segments, transitions) {
     const before = i > 0 ? transitions[i - 1].duration / 2 : 0;
     const after = i < transitions.length ? transitions[i].duration / 2 : 0;
     const need = seg.duration + before + after;
-    const request = Math.max(1, Math.min(15, Math.ceil(need + 0.4)));
+    // 영상 AI 는 한 번에 15초까지라서, 그보다 길면 이어 붙여 만든다 (runner 참고)
+    const request = Math.max(1, Math.ceil(need + 0.4));
     return { need: round3(need), lead: round3(before), request };
   });
 }

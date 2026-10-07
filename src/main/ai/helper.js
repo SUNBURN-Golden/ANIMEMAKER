@@ -53,11 +53,10 @@ function waitForNewDownload(o) {
 }
 
 const SITES = {
-  gemini: { name: 'Gemini', url: 'https://gemini.google.com/app', good: ['music', 'image', 'video'] },
+  gemini: { name: 'Gemini', url: 'https://gemini.google.com/app', good: ['image', 'video'] },
   grok: { name: 'Grok Imagine', url: 'https://grok.com/imagine', good: ['image', 'video'] },
   chatgpt: { name: 'ChatGPT', url: 'https://chatgpt.com/', good: ['image'] },
   sora: { name: 'Sora', url: 'https://sora.chatgpt.com/', good: ['video'] },
-  suno: { name: 'Suno', url: 'https://suno.com/create', good: ['music'] },
 };
 
 const EXTS = {

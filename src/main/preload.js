@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('api', {
   copyImage: (p) => call('sys:copyImage', p),
   pickFile: (o) => call('sys:pickFile', o),
   pickFolder: () => call('sys:pickFolder'),
+  readTextFile: (p) => call('sys:readTextFile', p),
+  probeMedia: (p) => call('media:probe', p),
   pathForFile: (file) => (webUtils && webUtils.getPathForFile ? webUtils.getPathForFile(file) : file.path),
 
   getSettings: () => call('settings:get'),
@@ -40,7 +42,8 @@ contextBridge.exposeInMainWorld('api', {
   updatePlan: (id, plan) => call('proj:updatePlan', id, plan),
   updateLyrics: (id, lyrics) => call('proj:updateLyrics', id, lyrics),
   setBpm: (id, bpm) => call('proj:setBpm', id, bpm),
-  resetMusic: (id) => call('proj:resetMusic', id),
+  replaceSong: (id, file) => call('proj:replaceSong', id, file),
+  updateLyricsText: (id, raw, filename) => call('proj:updateLyricsText', id, raw, filename),
   readLog: (id) => call('proj:readLog', id),
   setProviders: (id, providers, sites) => call('proj:setProviders', id, providers, sites),
 

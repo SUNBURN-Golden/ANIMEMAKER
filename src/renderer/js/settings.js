@@ -7,13 +7,12 @@
   const CAP_LABEL = { text: '글쓰기(기획)', image: '이미지', video: '영상' };
 
   function presetsFor(botOn) {
-    const music = botOn ? 'bot:gemini' : 'helper';
     return [
-      { name: '⭐ 추천: ChatGPT + SuperGrok + Gemini', desc: '기획·키프레임은 ChatGPT, 영상은 Grok, 노래는 Gemini', providers: { text: 'codex', image: 'codex', video: 'grok', music }, sites: { music: 'gemini', image: 'gemini', video: 'grok' } },
-      { name: 'SuperGrok 하나로', desc: '기획·이미지·영상 모두 Grok, 노래는 Gemini 도우미', providers: { text: 'grok', image: 'grok', video: 'grok', music }, sites: { music: 'gemini', image: 'grok', video: 'grok' } },
-      { name: 'ChatGPT 하나로', desc: '기획·이미지는 자동, 영상·노래는 도우미', providers: { text: 'codex', image: 'codex', video: 'helper', music }, sites: { music: 'gemini', image: 'chatgpt', video: 'sora' } },
-      { name: 'Google AI(Gemini) 하나로', desc: '기획은 Antigravity CLI, 그림·영상·노래는 Gemini 웹', providers: { text: 'agy', image: botOn ? 'bot:gemini' : 'helper', video: botOn ? 'bot:gemini' : 'helper', music }, sites: { music: 'gemini', image: 'gemini', video: 'gemini' } },
-      { name: '체험 모드 (무료 구경)', desc: 'AI 없이 가짜 결과물로 흐름만 확인', providers: { text: 'demo', image: 'demo', video: 'demo', music: 'demo' }, sites: {} },
+      { name: '⭐ 추천: ChatGPT + SuperGrok', desc: '기획·키프레임은 ChatGPT, 영상 클립은 Grok (둘 다 자동)', providers: { text: 'codex', image: 'codex', video: 'grok' }, sites: { image: 'gemini', video: 'grok' } },
+      { name: 'SuperGrok 하나로', desc: '기획·이미지·영상 모두 Grok 이 자동으로', providers: { text: 'grok', image: 'grok', video: 'grok' }, sites: { image: 'grok', video: 'grok' } },
+      { name: 'ChatGPT 하나로', desc: '기획·이미지는 자동, 영상은 도우미(Sora 웹)', providers: { text: 'codex', image: 'codex', video: 'helper' }, sites: { image: 'chatgpt', video: 'sora' } },
+      { name: 'Google AI(Gemini) 하나로', desc: '기획은 Antigravity CLI, 그림·영상은 Gemini 웹', providers: { text: 'agy', image: botOn ? 'bot:gemini' : 'helper', video: botOn ? 'bot:gemini' : 'helper' }, sites: { image: 'gemini', video: 'gemini' } },
+      { name: '체험 모드 (무료 구경)', desc: 'AI 없이 가짜 그림·영상으로 흐름만 확인', providers: { text: 'demo', image: 'demo', video: 'demo' }, sites: {} },
     ];
   }
 
@@ -113,7 +112,6 @@
       ['text', '📝 기획 · 타이밍 설계', '스토리보드, 시나리오, 가사, 샷 설계를 쓰는 "오케스트레이터" AI'],
       ['image', '🖼️ 키프레임', '컷마다 첫 장면 그림'],
       ['video', '🎞️ 영상 클립', '키프레임을 1~15초 영상으로 움직이기'],
-      ['music', '🎵 음악', '30초 노래 파트 만들기 (Gemini 의 Lyria 가 30초 곡을 만들어요)'],
     ];
     const siteOpts = (kind) => Object.entries(info.sites).filter(([, v]) => v.good.includes(kind)).map(([k, v]) => h('option', { value: k }, v.name));
     const body = h('tbody', null, rows.map(([k, label, desc]) => {
@@ -165,7 +163,7 @@
     return h('div', { class: 'section' },
       h('div', { class: 'row' },
         h('div', { class: 'grow' }, h('h3', null, '🤖 자동 클릭 (실험적)'),
-          h('p', { class: 'desc' }, 'CLI 가 없는 단계(예: Gemini 음악·Veo 영상, Grok Imagine 웹)를 브라우저를 대신 눌러서 자동으로 해요. 사이트 화면이 바뀌면 멈출 수 있고, 그럴 땐 자동으로 도우미 모드로 넘어가요.')),
+          h('p', { class: 'desc' }, 'CLI 가 없는 단계(예: Gemini 이미지·Veo 영상, Grok Imagine 웹)를 브라우저를 대신 눌러서 자동으로 해요. 사이트 화면이 바뀌면 멈출 수 있고, 그럴 땐 자동으로 도우미 모드로 넘어가요.')),
         h('label', { class: 'check', style: { fontWeight: 700 } }, toggle, on ? '켜짐' : '꺼짐')),
       h('div', { class: 'notice warn small' }, '⚠ 대부분의 AI 서비스 약관은 자동화된 방식의 이용을 금지해요. 계정이 제한될 수 있으니 본인 판단으로 사용하세요. 이 앱은 보안문자(CAPTCHA)를 풀거나 봇 탐지를 피하는 기능을 넣지 않았어요. 그런 화면이 나오면 사용자에게 넘깁니다.'),
       h('div', { class: 'grid3' },
@@ -185,7 +183,7 @@
         class: 'adv', style: { marginTop: '14px' },
         ontoggle: async (e) => { if (e.target.open && !recipeBox.value) { const r = await AM.safe(() => window.api.botRecipes()); if (r) recipeBox.value = JSON.stringify(r, null, 2); } },
       }, h('summary', null, '고급: 자동 클릭 레시피 고치기 (사이트 화면이 바뀌었을 때)'),
-      h('p', { class: 'small muted' }, '각 작업(gemini.music 등)의 단계(steps)와 선택자(any), 버튼 글자(texts)를 고칠 수 있어요. 잘 모르겠으면 건드리지 마세요.'),
+      h('p', { class: 'small muted' }, '각 작업(gemini.image, grok.video 등)의 단계(steps)와 선택자(any), 버튼 글자(texts)를 고칠 수 있어요. 잘 모르겠으면 건드리지 마세요.'),
       recipeBox,
       h('div', { class: 'row', style: { marginTop: '8px' } },
         h('button', { class: 'btn small primary', onclick: () => AM.safe(() => window.api.botSaveRecipes(recipeBox.value), '레시피를 저장했어요') }, '저장'),
@@ -213,6 +211,7 @@
     onLimit.value = s.onLimit;
     const waitMin = h('input', { type: 'number', value: s.limitWaitMinutes, min: 5, max: 300 });
     const maxH = h('input', { type: 'number', value: s.limitMaxHours, min: 1, max: 48 });
+    const vmax = h('input', { type: 'number', value: s.videoMaxSeconds || 15, min: 3, max: 30 });
     const ci = h('select', null, ['1', '2', '3'].map((v) => h('option', { value: v }, `${v}개씩`)));
     ci.value = String(s.concurrency.image);
     const cv = h('select', null, ['1', '2', '3'].map((v) => h('option', { value: v }, `${v}개씩`)));
@@ -232,10 +231,11 @@
         h('label', { class: 'field' }, '최대 몇 시간까지 기다릴까?', maxH)),
       h('div', { class: 'grid3', style: { marginTop: '12px' } },
         h('label', { class: 'field' }, '이미지 동시에 만들기 (자동 CLI 만)', ci, h('span', { class: 'hint' }, '많을수록 빠르지만 한도를 빨리 써요.')),
-        h('label', { class: 'field' }, '영상 동시에 만들기 (자동 CLI 만)', cv)),
+        h('label', { class: 'field' }, '영상 동시에 만들기 (자동 CLI 만)', cv),
+        h('label', { class: 'field' }, '영상 AI 가 한 번에 만드는 최대 길이(초)', vmax, h('span', { class: 'hint' }, 'Grok Imagine 은 15초. 이보다 긴 컷은 마지막 장면에서 이어 만들어 붙여요.'))),
       h('div', { class: 'row', style: { marginTop: '12px' } }, h('button', {
         class: 'btn primary small',
-        onclick: () => AM.safe(() => window.api.saveSettings({ onLimit: onLimit.value, limitWaitMinutes: Number(waitMin.value), limitMaxHours: Number(maxH.value), concurrency: { image: Number(ci.value), video: Number(cv.value) } }), '저장했어요'),
+        onclick: () => AM.safe(() => window.api.saveSettings({ onLimit: onLimit.value, limitWaitMinutes: Number(waitMin.value), limitMaxHours: Number(maxH.value), concurrency: { image: Number(ci.value), video: Number(cv.value) }, videoMaxSeconds: Math.max(3, Math.min(30, Number(vmax.value) || 15)) }), '저장했어요'),
       }, '저장')),
       h('div', { class: 'small muted', style: { marginTop: '10px' } }, `영상 처리 엔진(ffmpeg): ${info.ffmpeg}`));
   }

@@ -74,12 +74,54 @@ test('JSON extraction from messy LLM output', () => {
 
 test('prompt composition uses the sentence template and characters', () => {
   const wf = BUILTIN_WORKFLOWS[0];
-  const plan = P.normalizePlan({ title: 't', story: [], characters: [{ name: '미나', appearance_en: 'girl with red scarf' }], song_parts: [{ lyrics: ['a'] }], music: { bpm: '128' } }, wf);
-  assert.strictEqual(plan.music.bpm, 128);
-  assert.strictEqual(plan.song_parts.length, wf.musicParts);
+  const plan = P.normalizePlan({ title: 't', story: [{ sections: ['Verse 1'], summary_ko: '시작' }], characters: [{ name: '미나', appearance_en: 'girl with red scarf' }], music: { genre: 'pop' } }, wf);
+  assert.deepStrictEqual(plan.story[0].sections, ['Verse 1']);
+  assert.ok(P.validPlan({ title: 'x', story: [{}] }) && !P.validPlan({ title: 'x' }));
+  const pp = P.planPrompt('', '[Chorus]\n달려가', { duration: 215.4, bpm: 118, downbeats: new Array(105), bars: [{ energy: 0.3 }, { energy: 0.9 }] }, wf);
+  assert.match(pp, /3:35/);
+  assert.match(pp, /\[Chorus\]/);
+  assert.match(pp, /You do NOT write lyrics/);
   const kp = P.composeKeyframePrompt({ characters: ['미나'], subject: 'Mina', action: 'jumps', setting: 'rooftop', camera: 'wide shot', lighting: 'sunset' }, plan, wf);
   assert.match(kp, /girl with red scarf/);
   assert.match(kp, /jumps/);
   assert.match(kp, /No text/);
   assert.ok(!/\{\w+\}/.test(kp), 'no leftover placeholders');
+});
+
+test('lyrics: Suno tags, LRC and SRT', () => {
+  const { parseLyrics, sectionSummary } = require('../src/main/media/lyrics');
+  const a = parseLyrics('[Intro]\n\n[Verse 1]\n비가 내리던 밤\n**우산** 없이\n(oh oh)\n[Chorus]\n달려가\n[Instrumental Break]\n[Bridge]\n브릿지\n[Outro]');
+  assert.strictEqual(a.source, 'text');
+  assert.deepStrictEqual(a.lines.map((l) => l.text), ['비가 내리던 밤', '우산 없이', '(oh oh)', '달려가', '브릿지']);
+  assert.strictEqual(a.lines[0].gapBefore, 1, 'intro before first line');
+  assert.strictEqual(a.lines[4].gapBefore, 1, 'instrumental break before bridge');
+  assert.strictEqual(a.trailingGaps, 1, 'outro at the end');
+  assert.ok(a.lines[3].sectionStart && !a.lines[1].sectionStart);
+  assert.match(sectionSummary(a), /\[Chorus\]\n달려가/);
+  const b = parseLyrics('[ar:x]\n[00:12.30]첫 줄\n[00:15.8]둘째 줄', 'x.lrc');
+  assert.strictEqual(b.source, 'lrc');
+  assert.deepStrictEqual(b.timed.map((t) => t.start), [12.3, 15.8]);
+  const c = parseLyrics('1\n00:00:01,000 --> 00:00:03,500\n안녕\n\n2\n00:00:04,000 --> 00:00:06,000\n<i>하이</i>\n');
+  assert.strictEqual(c.source, 'srt');
+  assert.deepStrictEqual(c.timed[1], { text: '하이', start: 4, end: 6 });
+  assert.strictEqual(parseLyrics('').source, 'none');
+});
+
+test('3-4 minute song → 10-15 cuts of 1-30s on beats', () => {
+  const { parseLyrics } = require('../src/main/media/lyrics');
+  const lyr = parseLyrics(`[Intro]\n[Verse 1]\n${Array.from({ length: 8 }, (_, i) => `벌스 가사 ${i}`).join('\n')}\n[Chorus]\n${Array.from({ length: 6 }, (_, i) => `후렴 ${i}`).join('\n')}\n[Verse 2]\n${Array.from({ length: 8 }, (_, i) => `둘째 벌스 ${i}`).join('\n')}\n[Chorus]\n${Array.from({ length: 6 }, (_, i) => `후렴 ${i}`).join('\n')}\n[Outro]`);
+  for (const [bpm, dur] of [[100, 210], [128, 240]]) {
+    const a = analyzeSamples(synth(bpm, dur), bpm);
+    const parts = [{ index: 1, start: 0, end: a.duration }];
+    const lyrics = T.estimateLyricTiming(lyr.lines, parts, a, { trailingGaps: lyr.trailingGaps })
+      .map((l, i) => ({ ...l, sectionStart: lyr.lines[i].sectionStart }));
+    assert.ok(lyrics[0].start > 4, 'intro left empty');
+    assert.ok(lyrics[lyrics.length - 1].end < a.duration - 4, 'outro left empty');
+    for (const pace of ['fast', 'normal', 'slow']) {
+      const segs = T.segmentSong(a, lyrics, parts, { minClips: 10, maxClips: 15, minLen: 1, maxLen: 30, pace });
+      assert.ok(segs.length >= 10 && segs.length <= 15, `${pace} count ${segs.length}`);
+      for (const s of segs) assert.ok(s.duration >= 1 && s.duration <= 30.001, `${pace} len ${s.duration}`);
+      for (const s of segs.slice(1)) assert.ok(a.beats.some((b) => Math.abs(b - s.start) < 1e-3));
+    }
+  }
 });

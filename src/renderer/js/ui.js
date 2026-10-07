@@ -126,12 +126,6 @@ window.AM = window.AM || {};
       { id: 'helper', label: '도우미 (웹에서 직접 만들고 다운로드)', mode: 'helper', short: '도우미' },
       { id: 'demo', label: '체험 모드 (가짜 영상)', mode: 'demo', short: '체험' },
     ],
-    music: [
-      { id: 'bot:gemini', label: 'Gemini 음악 (Lyria, 30초 곡) · 자동 클릭 (실험적)', mode: 'bot', site: 'gemini', short: 'Gemini 웹' },
-      { id: 'helper', label: '도우미 (Gemini·Suno 등에서 직접 만들고 다운로드)', mode: 'helper', short: '도우미' },
-      { id: 'file', label: '내가 가진 노래 파일 넣기', mode: 'file', short: '내 파일' },
-      { id: 'demo', label: '체험 모드 (박자만 있는 예시 음악)', mode: 'demo', short: '체험' },
-    ],
   };
   const MODE_LABEL = { auto: '자동', bot: '자동 클릭', helper: '도우미', file: '직접', demo: '체험' };
   const MODE_CHIP = { auto: 'ok', bot: 'pri', helper: 'warn', file: 'warn', demo: '' };
@@ -140,8 +134,8 @@ window.AM = window.AM || {};
   }
 
   const STEP_META = [
+    { id: 'music', icon: '🎵', label: '노래·가사', who: () => ({ short: '내 PC (무료)', mode: 'auto' }) },
     { id: 'plan', icon: '📝', label: '기획', who: (pv) => providerInfo('text', pv.text) },
-    { id: 'music', icon: '🎵', label: '음악·BPM', who: (pv) => providerInfo('music', pv.music) },
     { id: 'timing', icon: '⏱️', label: '타이밍 설계', who: (pv) => ({ ...providerInfo('text', pv.text), short: `내 PC + ${providerInfo('text', pv.text).short}` }) },
     { id: 'keyframes', icon: '🖼️', label: '키프레임', who: (pv) => providerInfo('image', pv.image) },
     { id: 'clips', icon: '🎞️', label: '영상 클립', who: (pv) => providerInfo('video', pv.video) },

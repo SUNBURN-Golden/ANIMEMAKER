@@ -154,6 +154,17 @@ function registerIpc() {
     const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: opts.filters || [] });
     return r.canceled ? null : r.filePaths[0];
   });
+  h('sys:readTextFile', (p) => {
+    const st = fs.statSync(p);
+    if (st.size > 2 * 1024 * 1024) throw new Error('파일이 너무 큽니다.');
+    return fs.readFileSync(p, 'utf8');
+  });
+  h('media:probe', async (p) => {
+    const { probe } = require('./media/ffmpeg');
+    const info = await probe(p);
+    if (!info.hasAudio) throw new Error('소리가 없는 파일이에요. 노래 파일(mp3, wav, m4a, mp4 등)을 골라 주세요.');
+    return info;
+  });
   h('sys:pickFolder', async () => {
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] });
     return r.canceled ? null : r.filePaths[0];
@@ -170,9 +181,10 @@ function registerIpc() {
 
   // 프로젝트
   h('proj:list', () => store.listProjects());
-  h('proj:create', ({ topic, workflowId }) => {
+  h('proj:create', ({ topic, workflowId, songPath, lyricsText, lyricsFilename }) => {
     const wf = store.getWorkflow(workflowId);
-    const p = store.createProject(topic, wf);
+    if (songPath && !fs.existsSync(songPath)) throw new Error('노래 파일을 찾을 수 없습니다.');
+    const p = store.createProject(String(topic || '').trim(), wf, { songPath, lyricsText, lyricsFilename });
     const r = getRunner(p.id);
     r.run();
     return r.snapshot();
@@ -194,7 +206,8 @@ function registerIpc() {
   h('proj:updatePlan', (id, plan) => { getRunner(id).updatePlan(plan); return true; });
   h('proj:updateLyrics', (id, lyrics) => { getRunner(id).updateLyrics(lyrics); return true; });
   h('proj:setBpm', (id, bpm) => getRunner(id).setBpm(bpm));
-  h('proj:resetMusic', (id) => { getRunner(id).resetMusic(); return true; });
+  h('proj:replaceSong', (id, file) => { getRunner(id).replaceSong(file); return true; });
+  h('proj:updateLyricsText', (id, raw, filename) => { getRunner(id).updateLyricsText(raw, filename); return true; });
   h('proj:readLog', (id) => {
     const f = path.join(store.projectDir(id), 'log.txt');
     try {
@@ -221,10 +234,10 @@ function registerIpc() {
     const s = store.getSettings();
     const prov = s.providers.text;
     if (prov === 'demo' || !AGENTS[prov]) {
-      return ['비 오는 날 우산을 잃어버린 고양이의 모험', '편의점 알바생 로봇의 첫사랑', '우주정거장에서 라면 끓이는 강아지', '할머니 댁 다락방에서 찾은 마법 지도', '새벽 지하철의 유령 DJ'];
+      return ['비 오는 도시를 헤매며 잃어버린 친구를 찾는 고양이', '편의점 알바생 로봇의 첫사랑 이야기', '새벽 지하철에서 만난 유령 DJ 와의 하룻밤', '할머니 댁 다락방에서 찾은 마법 지도로 떠나는 여행', '여름 바닷가 마을의 마지막 불꽃놀이'];
     }
     const obj = await agentText(prov, {
-      prompt: `Suggest 6 short, fun, original topics (in Korean, one sentence each) for a 1-minute AI anime music video.${seed ? ` Theme hint: ${seed}` : ''} Return JSON: {"topics": ["...", "..."]}`,
+      prompt: `Suggest 6 short, original music video concepts (in Korean, one sentence each) for a 3-4 minute AI music video of a song.${seed ? `\nUse this as the basis (user's idea and/or the song lyrics):\n${seed}` : ''}\nReturn JSON: {"topics": ["...", "..."]}`,
       dir: path.join(app.getPath('temp'), 'animemaker-topics', String(Date.now())),
       settings: s,
       accept: (o) => Array.isArray(o.topics) && o.topics.length > 0,
