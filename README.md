@@ -1,4 +1,4 @@
-# AnimeMaker – AI 뮤직비디오 자동 제작기 (Windows)
+# AnimeMaker – AI 뮤직비디오 자동 제작기 (Windows · Android)
 
 **Suno 등으로 만든 노래 파일과 가사**를 올리면, 이미 구독 중인 AI(ChatGPT · SuperGrok · Google AI(Gemini) · Claude)를 불러와서
 스토리보드 → 박자에 맞춘 컷 설계(10~15컷, 컷당 1~30초) → 키프레임 → 영상 클립 → **가사 자막과 노래를 입힌 3~4분 완성본**까지 자동으로 만들어 주는 윈도우 프로그램입니다.
@@ -60,6 +60,22 @@ Gemini 의 **Veo 영상·나노바나나 이미지**, Grok Imagine 웹처럼 웹
 - **그림/영상 하나만 다시**: [키프레임]/[영상 클립] 탭에서 ✏️ 다시 (프롬프트 수정 가능) 또는 📁 교체 → [완성 영상] 탭에서 다시 만들기.
 - **워크플로우**: 그림체, 화면 비율(9:16/16:9/1:1/4:5), 컷 수(기본 10~15)·길이(기본 1~30초)·템포, 화면전환 스타일, 자막 모양, 문장 구조 틀, 확인 단계를 저장해 두고 재사용.
 
+## 📱 안드로이드 앱 (폰 혼자 다 하는 버전)
+
+PC 없이 폰 하나로 같은 흐름을 따라갑니다. 설치 파일: GitHub Actions 의 **AnimeMaker-Android** 결과물(`AnimeMaker-<버전>-android.apk`)
+→ 폰에서 열기 → "출처를 알 수 없는 앱 설치 허용" 을 한 번 켜고 설치 (안드로이드 7 이상, 영상 만들기는 Android System WebView/Chrome 최신 버전 권장).
+
+1. **노래·가사**: Suno 노래 파일을 고르고(또는 Suno 앱에서 공유 → AnimeMaker) 가사를 붙여 넣습니다. 박자(BPM)·마디 분석은 폰 안에서 합니다.
+2. **이야기 · 장면 설계**: [부탁하기] 를 누르면 부탁 글이 **ChatGPT · Gemini · Grok · Claude 앱**으로 바로 들어갑니다. 답장을 길게 눌러 복사하고 돌아오면 자동으로 읽습니다.
+3. **컷 나누기**: PC 판과 같은 계산으로 박자·가사에 맞춰 10~15컷. [탭으로 가사 맞추기] 로 자막 시간을 정확히 맞출 수 있습니다.
+4. **그림**: 컷마다 [부탁하기] → AI 앱에서 그림이 나오면 **공유 → AnimeMaker** (또는 갤러리에 저장 후 [사진 고르기]). 캐릭터 기준 그림을 먼저 만들면 부탁할 때 같이 보내 같은 주인공을 유지합니다.
+5. **움직이기 (선택)**: 그대로 두면 그림이 천천히 확대되며 움직이고, 원하면 컷마다 Grok·Gemini 영상으로 부탁해 진짜 움직이는 영상으로 바꿉니다.
+6. **완성**: 컷 + 박자에 맞춘 화면전환 + 가사 자막 + 노래를 **폰 안에서 MP4 로 합칩니다**(폰의 영상 인코더 사용, 인터넷·서버 필요 없음). 갤러리(동영상/AnimeMaker)에 저장하거나 바로 공유합니다.
+
+- 🔒 폰 앱도 **구독 전용**입니다. 유료 API 를 부르지 않고, 내 폰에 설치된 공식 AI 앱으로 글·그림을 주고받기만 합니다.
+- 🧪 [체험해 보기] 를 누르면 AI 없이 1분짜리 연습 영상을 끝까지 만들어 흐름을 익힐 수 있습니다.
+- 작품은 앱 안 저장소에만 있습니다. 앱을 지우면 함께 지워지니, 완성 영상은 갤러리에 저장해 두세요.
+
 ## 결과물 위치
 
 `문서\AnimeMaker\<날짜 주제>\`
@@ -91,13 +107,34 @@ src/main/
   ai/cli.js, ai/agents.js      구독 CLI 실행 (API 키 제거, 결과 파일 탐지)
   ai/helper.js                 도우미 모드 (다운로드 폴더 감시)
   ai/webbot/                   자동 클릭 (Edge/Chrome CDP + 레시피)
-  ai/demo.js                   체험 모드
-  media/audio.js               BPM · 박자 · 마디 분석 (내 PC)
+  ai/demo.js, ai/demo-data.js  체험 모드 (demo-data 는 폰 앱과 공용)
+  media/audio.js               노래 읽기 (ffmpeg) → audio-analysis.js 로 BPM · 박자 · 마디 분석 (폰 앱과 공용)
   media/lyrics.js              가사 읽기 (Suno 구간 태그, .lrc, .srt)
   media/timeline.js            가사 타이밍 · 박자 단위 컷 나누기(DP) · 전환 길이
   media/assemble.js            ffmpeg 이어붙이기 · xfade 전환 · 자막 · 노래
   subtitles.js                 가사 자막 PNG (맑은 고딕)
 src/renderer/                  화면 (한국어 UI)
+```
+
+안드로이드 앱 (`mobile/`, Capacitor + 웹 화면):
+
+```bash
+cd mobile
+npm install
+npm test           # 계산 단위 테스트 + Chromium 으로 화면을 끝까지 눌러 MP4 확인 (CHROME_PATH 로 브라우저 지정 가능)
+npm run apk        # www 묶기 → cap sync → gradlew assembleDebug (JDK 21, Android SDK 36 필요. CI 가 자동으로 만듦)
+```
+
+```
+mobile/src/
+  pipeline.js        작업 순서 (PC 의 prompts · timeline · lyrics · audio-analysis 를 그대로 사용)
+  audio.js, analyze.worker.js   노래 읽기 + 박자 분석 (Worker)
+  render.js          WebCodecs(Mediabunny) 로 컷·전환·자막·노래 → MP4
+  transitions.js, subtitles.js  화면전환 · 가사 자막 그리기
+  native.js          AI 앱으로 보내기 · 공유 받기 · 갤러리 저장 (안드로이드 플러그인 연결)
+  db.js              작품·파일 저장 (IndexedDB)
+  main.js, project.js, tap.js, ui.js   화면
+mobile/android/app/src/main/java/com/animemaker/mobile/AnimeMakerNativePlugin.java   안드로이드 전용 기능
 ```
 
 서드파티 구성요소는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 를 참고하세요.

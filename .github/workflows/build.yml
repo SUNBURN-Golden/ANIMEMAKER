@@ -1,4 +1,4 @@
-name: Windows 설치 파일 만들기
+name: 설치 파일 만들기 (Windows · Android)
 
 on:
   push:
@@ -53,3 +53,55 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.exe
+
+  android-apk:
+    name: 안드로이드 앱 (.apk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: PC 앱 패키지 (공용 계산 코드 + 테스트용 ffmpeg)
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - name: 폰 앱 패키지
+        run: npm ci
+        working-directory: mobile
+      - name: 폰 앱 테스트 (Chrome 으로 끝까지 눌러 보기)
+        run: npm test
+        working-directory: mobile
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+      - name: APK 빌드
+        working-directory: mobile
+        run: |
+          npm run build
+          npx cap sync android
+          cd android && ./gradlew assembleDebug --no-daemon
+      - name: 파일 이름 정리
+        run: |
+          V=$(node -p "require('./mobile/package.json').version")
+          mkdir -p dist
+          cp mobile/android/app/build/outputs/apk/debug/app-debug.apk "dist/AnimeMaker-${V}-android.apk"
+      - name: 결과물 올리기
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnimeMaker-Android
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
+      - name: 릴리스에 올리기 (v 로 시작하는 태그일 때만)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.apk
