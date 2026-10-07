@@ -1,6 +1,7 @@
 'use strict';
 // 최종 편집: 클립 정리 → 화면전환으로 이어붙이기 → 하단 가사 자막 → 노래 깔기.
 const fs = require('fs');
+const path = require('path');
 const { runFfmpeg, probe } = require('./ffmpeg');
 
 const FPS = 30;
@@ -167,9 +168,11 @@ async function assembleFinal(p) {
     cur = `o${k}`;
   });
   if (!subs.length && p.assFile) {
-    const assPath = p.assFile.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
-    const fontsdir = process.platform === 'win32' ? ':fontsdir=C\\:/Windows/Fonts' : '';
-    f.push(`[${cur}]ass='${assPath}'${fontsdir}[subbed]`);
+    // 필터 문자열 안의 윈도우 경로(C:)는 이스케이프가 까다로워서,
+    // ffmpeg 를 자막 파일 폴더에서 실행하고 파일 이름만 넘긴다.
+    const assName = path.basename(p.assFile).replace(/[^\w.-]/g, '_');
+    if (assName !== path.basename(p.assFile)) fs.copyFileSync(p.assFile, path.join(path.dirname(p.assFile), assName));
+    f.push(`[${cur}]ass=${assName}[subbed]`);
     cur = 'subbed';
   }
   f.push(`[${cur}]null[vout]`);
@@ -182,7 +185,11 @@ async function assembleFinal(p) {
   args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '19', '-r', String(FPS), '-pix_fmt', 'yuv420p',
     '-t', total.toFixed(3), '-movflags', '+faststart',
     '-metadata', 'comment=Made with AI (AnimeMaker)', '-metadata', 'description=AI-generated content', out);
-  await runFfmpeg(args, { signal, onProgress: onProgress ? (s) => onProgress(Math.min(1, s / total)) : undefined });
+  await runFfmpeg(args, {
+    signal,
+    cwd: !subs.length && p.assFile ? path.dirname(p.assFile) : undefined,
+    onProgress: onProgress ? (s) => onProgress(Math.min(1, s / total)) : undefined,
+  });
   return out;
 }
 

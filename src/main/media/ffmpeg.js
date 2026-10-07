@@ -30,13 +30,14 @@ function ffmpegPath() {
 /**
  * ffmpeg 실행. 실패하면 stderr 마지막 부분을 담은 Error 를 던진다.
  * @param {string[]} args
- * @param {{signal?: AbortSignal, onProgress?: (sec:number)=>void, capture?: 'stdout'}} opts
+ * @param {{signal?: AbortSignal, onProgress?: (sec:number)=>void, capture?: 'stdout', cwd?: string}} opts
  */
 function runFfmpeg(args, opts = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(ffmpegPath(), ['-hide_banner', '-nostdin', ...args], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: opts.cwd,
     });
     const out = [];
     let err = '';

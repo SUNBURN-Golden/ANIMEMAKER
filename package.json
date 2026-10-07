@@ -53,8 +53,7 @@
             "x64"
           ]
         }
-      ],
-      "artifactName": "AnimeMaker-${version}-${arch}-${target}.${ext}"
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -66,7 +65,8 @@
       "installerLanguages": [
         "ko_KR"
       ],
-      "language": "1042"
+      "language": "1042",
+      "artifactName": "AnimeMaker-${version}-setup.${ext}"
     },
     "portable": {
       "artifactName": "AnimeMaker-${version}-portable.${ext}"
