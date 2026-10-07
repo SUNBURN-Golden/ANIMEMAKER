@@ -1,0 +1,75 @@
+{
+  "name": "animemaker",
+  "productName": "AnimeMaker",
+  "version": "0.1.0",
+  "description": "주제만 넣으면 스토리보드 → 키프레임 → 영상 클립 → 음악 → 최종 영상까지 자동으로 만들어 주는 윈도우용 AI 숏폼 제작기",
+  "main": "src/main/main.js",
+  "author": "SUNBURN-Golden",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test --test-concurrency=1 \"test/*.test.js\"",
+    "dist:win": "electron-builder --win --x64 --publish never",
+    "dist:dir": "electron-builder --dir --publish never"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.3.0",
+    "playwright-core": "^1.63.0"
+  },
+  "devDependencies": {
+    "electron": "^44.6.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.sunburngolden.animemaker",
+    "productName": "AnimeMaker",
+    "copyright": "SUNBURN-Golden",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "!src/**/*.test.js"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**",
+      "node_modules/playwright-core/**"
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "AnimeMaker-${version}-${arch}-${target}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AnimeMaker",
+      "installerLanguages": [
+        "ko_KR"
+      ],
+      "language": "1042"
+    },
+    "portable": {
+      "artifactName": "AnimeMaker-${version}-portable.${ext}"
+    }
+  }
+}
